@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>專案 WBS 追蹤</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<div id="loginOverlay" class="login-overlay" style="display:none">
+  <form id="loginForm" class="login-box">
+    <h2 id="loginTitle">專案 WBS 追蹤</h2>
+    <p class="sub" id="loginHint">這台是共用 Server，請先登入。如果人員名單裡已經有你的名字，
+      第一次登入輸入的密碼就會變成你的密碼。</p>
+    <label>姓名</label>
+    <input id="loginNameInput" autocomplete="username" list="loginNameList" required>
+    <datalist id="loginNameList"></datalist>
+    <label>密碼</label>
+    <input id="loginPassword" type="password" autocomplete="current-password" required>
+    <label id="loginPassword2Label" style="display:none">確認密碼</label>
+    <input id="loginPassword2" type="password" autocomplete="new-password" style="display:none">
+    <button type="submit" id="loginSubmitBtn">登入</button>
+    <button type="button" class="ghost" id="loginToggleMode">名單裡沒有我的名字，我要註冊新帳號</button>
+    <div class="sub" id="loginMsg"></div>
+  </form>
+</div>
+<header>
+  <div class="topbar">
+    <div class="brand">
+      <span class="logo">▦</span>
+      <div>
+        <h1>專案 WBS 追蹤</h1>
+        <div class="sub" id="hdrSub">—</div>
+      </div>
+    </div>
+    <div class="whoami" id="whoami" style="display:none">
+      <span id="whoamiName"></span>
+      <button class="ghost" id="logoutBtn">登出</button>
+    </div>
+    <div class="hdrver" id="hdrVer"></div>
+  </div>
+  <nav id="tabs">
+    <button data-tab="overview">總覽</button>
+    <button data-tab="today" class="on">今日</button>
+    <button data-tab="workload">負荷評估</button>
+    <!-- 每個專案的分頁由 app.js 在這裡跟「週報」中間動態插入 -->
+    <button data-tab="report">週報</button>
+    <button data-tab="settings">設定</button>
+  </nav>
+</header>
+
+<main>
+  <!-- ================= 總覽（跨專案，一次看所有案子的階段圖＋狀態句） ================= -->
+  <section id="tab-overview" class="tab">
+    <div id="overviewBody"></div>
+  </section>
+
+  <!-- ================= 今日 ================= -->
+  <section id="tab-today" class="tab on">
+    <div id="onboardBanner"></div>
+    <div class="daybar">
+      <div>
+        <div class="daytitle" id="dayTitle">—</div>
+        <div class="sub" id="dayNote"></div>
+      </div>
+      <div class="kpis" id="kpis"></div>
+    </div>
+    <div id="todayBody"></div>
+  </section>
+
+  <!-- 每個專案的分頁（總覽／WBS 表／文件與階段 三個子分頁）由 app.js 動態插入於此 -->
+
+  <!-- ================= 負荷評估 ================= -->
+  <section id="tab-workload" class="tab">
+    <label class="chk" style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--sub);margin-bottom:10px">
+      <input type="checkbox" id="hidePastMonths"> 只看近三個月（本月起，時間軸放大聚焦在近期）
+    </label>
+    <nav class="subtabs">
+      <button data-sub="capacity" class="on">能力負荷</button>
+      <button data-sub="time">時間負荷</button>
+    </nav>
+    <div class="subtab on" data-subpanel="capacity">
+      <div id="capacityBody"></div>
+    </div>
+    <div class="subtab" data-subpanel="time">
+      <div class="granswitch">
+        <button class="granBtn on" data-gran="week">依週</button>
+        <button class="granBtn" data-gran="day">依日</button>
+      </div>
+      <div id="timeBody"></div>
+    </div>
+  </section>
+
+  <!-- ================= 週報 ================= -->
+  <section id="tab-report" class="tab">
+    <div class="toolbar">
+      <label class="sub">週別（該週任一天）</label>
+      <input type="date" id="weekPick">
+      <button id="genReport">產生週報</button>
+      <button id="copyReport" class="ghost">複製全文</button>
+      <a id="dlReportHtml" class="btn" href="#">📧 下載給主管的 HTML</a>
+      <a id="dlReportXls" class="ghost btn" href="/api/export/xls">📊 Excel 對照表</a>
+      <a id="dlReport" class="ghost btn" href="#">下載 .md</a>
+      <span class="spacer"></span>
+      <select id="pastReports"></select>
+    </div>
+    <p class="hint">「下載給主管的 HTML」為單一檔案，雙擊即可開啟，並可直接列印為 PDF，適合作為附件寄送。</p>
+    <div id="reportBody" class="paper"><p class="sub">請點選「產生週報」。內容依「今日」頁面中每日更新之進度自動產生。</p></div>
+  </section>
+
+  <!-- ================= 設定 ================= -->
+  <section id="tab-settings" class="tab">
+    <nav class="subtabs">
+      <button data-sub="proj" class="on mgrOnly">專案基本資料</button>
+      <button data-sub="people" class="mgrOnly">人員名單</button>
+      <button data-sub="env" class="mgrOnly">環境設定</button>
+      <button data-sub="naming">文件命名規則</button>
+      <button data-sub="backup">備份與還原</button>
+    </nav>
+
+    <div class="subtab on" data-subpanel="proj">
+      <div class="paper">
+        <h2>專案基本資料</h2>
+        <p class="sub">目標完工日（end_date）為凍結基準線時對外承諾的完工日期，填寫後方可於專案分頁「WBS 表」子分頁執行凍結。</p>
+        <div id="projForm"></div>
+      </div>
+    </div>
+
+    <div class="subtab" data-subpanel="people">
+      <div class="paper">
+        <h2>人員名單</h2>
+        <p class="sub">維護「負責人」下拉選單使用的人員名單，工作項目與應繳文件之負責人皆自本名單選取，不需手動輸入。</p>
+        <div id="peopleBody"></div>
+        <div class="toolbar" style="margin-top:10px">
+          <input id="newPersonName" placeholder="輸入姓名，例如：王小明" style="max-width:200px">
+          <button class="ghost" id="addPersonBtn">＋ 新增人員</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="subtab" data-subpanel="env">
+      <div class="paper">
+        <h2>環境設定</h2>
+        <p class="sub">本頁為系統中唯一與本機環境相關之設定。更換電腦時僅需調整 <code>docs_root</code>，其餘設定不受影響。</p>
+        <div class="form" id="cfgForm"></div>
+        <button id="saveCfg">儲存設定</button>
+        <button id="testEmail" class="ghost">測試寄送 Email 提醒</button>
+        <span class="sub" id="cfgMsg"></span>
+      </div>
+    </div>
+
+    <div class="subtab" data-subpanel="naming">
+      <div class="paper">
+        <h2>文件命名規則</h2>
+        <p class="sub">檔案掃描能否自動對應應繳文件，取決於檔名是否包含文件代碼。此處編輯的是共用範本，將套用於日後新建立之專案；
+          如需調整單一專案的文件清單，請至該專案的「文件與階段」頁面編輯。</p>
+        <div id="tplRuleBody"></div>
+      </div>
+      <nav class="subtabs" id="tplStageTabs"></nav>
+    </div>
+
+    <div class="subtab" data-subpanel="backup">
+      <div class="paper dangerZone adminOnly">
+        <h2>⚠️ 資料清空／還原</h2>
+        <p class="sub">僅於程式碼推送至公開儲存庫（例如公司端更新用之中繼站）前使用。
+          執行「清空」將先自動備份現有資料，再套用通用範例資料，供確認畫面不含任何真實內容；
+          完成後點選「還原」即可取回原資料繼續作業。</p>
+        <div class="toolbar">
+          <button class="ghost danger" id="clearDataBtn">清空資料（自動備份）</button>
+          <button class="ghost" id="restoreDataBtn">還原最近一次備份</button>
+        </div>
+        <label class="sub" style="display:flex;align-items:center;gap:6px;margin-top:4px">
+          <input type="checkbox" id="alsoTextBackup">
+          同時輸出文字版備份（.sql，供清空前檢查內容是否殘留敏感資訊；還原僅使用 .db 檔，文字版僅供核對）
+        </label>
+        <p class="sub" id="dataOpsMsg"></p>
+      </div>
+      <div class="paper">
+        <h2>存備份</h2>
+        <p class="sub">此功能不會清空資料或重新整理畫面，僅將目前資料另存一份備份，可隨時執行。
+          除必存的 .db 檔（供還原使用）外，可另外勾選是否輸出文字版或加密版。</p>
+        <label class="sub" style="display:flex;align-items:center;gap:6px">
+          <input type="checkbox" id="saveText"> 文字版備份（.sql，明碼可讀）
+        </label>
+        <label class="sub" style="display:flex;align-items:center;gap:6px">
+          <input type="checkbox" id="saveEncrypted"> 密檔備份（.enc，需設定密碼；採簡易混淆處理，非正式加密）
+        </label>
+        <div class="toolbar" style="margin-top:8px">
+          <button class="ghost" id="saveBackupBtn">存一份備份</button>
+        </div>
+        <p class="sub" id="saveBackupMsg"></p>
+      </div>
+    </div>
+  </section>
+</main>
+
+<div id="toast"></div>
+<script src="/static/app.js"></script>
+</body>
+</html>

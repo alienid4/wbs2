@@ -1,0 +1,306 @@
+{
+  "template_name": "IT 系統採購與導入標準流程 v1",
+  "description": "依據簽呈→POC→議價決標→合約→建置→測試→上線→驗收的實務流程訂定。每階段的必繳文件即為該階段的出場關卡（gate）：必繳文件未齊，階段不得標記完成。",
+  "filename_rule": "{專案代號}_{階段序}_{文件代碼}_{說明}_v{版次}_{YYYYMMDD}.{副檔名}",
+  "filename_example": "P01_02_PROPOSAL_立案簽呈_v1_20260901.docx",
+  "match_key": "文件代碼（DOC CODE）— 掃描時以檔名中出現的文件代碼判定歸屬，大小寫不拘",
+  "stages": [
+    {
+      "code": "S01",
+      "seq": 1,
+      "name": "需求規劃",
+      "purpose": "確認要解決什麼問題、範圍多大、值不值得做",
+      "exit_gate": "需求規格書與效益評估經單位主管確認",
+      "docs": [
+        {
+          "code": "REQ-SPEC",
+          "name": "需求規格書",
+          "required": true,
+          "note": "功能/非功能需求、介接對象、資安要求"
+        },
+        {
+          "code": "FEAS",
+          "name": "可行性與效益評估",
+          "required": true,
+          "note": "現況痛點、預期效益、粗估預算與人力"
+        },
+        {
+          "code": "SCOPE",
+          "name": "專案範圍說明書",
+          "required": false,
+          "note": "明列不做什麼，避免範圍蔓延"
+        },
+        {
+          "code": "STAKE",
+          "name": "關係人與權責清單",
+          "required": false,
+          "note": "跨部門專案強烈建議"
+        }
+      ]
+    },
+    {
+      "code": "S02",
+      "seq": 2,
+      "name": "立案簽呈",
+      "purpose": "取得預算與立案授權",
+      "exit_gate": "簽呈完成核決，預算到位",
+      "docs": [
+        {
+          "code": "PROPOSAL",
+          "name": "立案簽呈",
+          "required": true,
+          "note": "本案的正式起點文件"
+        },
+        {
+          "code": "BUDGET",
+          "name": "預算編列表",
+          "required": true,
+          "note": "分年度、分項目；含後續維運費"
+        },
+        {
+          "code": "APPROVAL",
+          "name": "核准紀錄",
+          "required": true,
+          "note": "核決層級的簽核回覆或系統截圖"
+        }
+      ]
+    },
+    {
+      "code": "S03",
+      "seq": 3,
+      "name": "POC 驗證",
+      "purpose": "在花大錢之前，先證明技術可行",
+      "exit_gate": "POC 驗證報告結論明確（通過／不通過／有條件通過）",
+      "docs": [
+        {
+          "code": "POC-APPLY",
+          "name": "POC 申請文件",
+          "required": true,
+          "note": "對內申請環境、帳號、資料；對外邀請廠商"
+        },
+        {
+          "code": "POC-PLAN",
+          "name": "POC 計畫書",
+          "required": true,
+          "note": "驗證項目、通過標準、時程、環境架構"
+        },
+        {
+          "code": "RFP",
+          "name": "RFP 需求書（草稿）",
+          "required": true,
+          "note": "POC 期間同步草擬，POC 結果回頭修正"
+        },
+        {
+          "code": "POC-ENV",
+          "name": "POC 環境與帳號申請單",
+          "required": false,
+          "note": "涉及正式資料時必繳"
+        },
+        {
+          "code": "POC-RPT",
+          "name": "POC 驗證報告",
+          "required": true,
+          "note": "逐項對照通過標準，含未通過項目的處置"
+        }
+      ]
+    },
+    {
+      "code": "S04",
+      "seq": 4,
+      "name": "招標與議價",
+      "purpose": "選出廠商並談定價格",
+      "exit_gate": "決標簽呈核決",
+      "docs": [
+        {
+          "code": "RFP-FINAL",
+          "name": "RFP 正式版",
+          "required": true,
+          "note": "併入 POC 結論後的定版"
+        },
+        {
+          "code": "VENDOR-CMP",
+          "name": "廠商評比表",
+          "required": true,
+          "note": "評分項目與權重須先於開標前訂定"
+        },
+        {
+          "code": "QUOTE",
+          "name": "報價與議價紀錄",
+          "required": true,
+          "note": "各次議價的價格與條件變動"
+        },
+        {
+          "code": "AWARD",
+          "name": "決標簽呈",
+          "required": true,
+          "note": "含決標理由說明"
+        }
+      ]
+    },
+    {
+      "code": "S05",
+      "seq": 5,
+      "name": "合約簽呈",
+      "purpose": "把商務條件與責任義務固定下來",
+      "exit_gate": "雙方用印完成，合約生效",
+      "docs": [
+        {
+          "code": "CONTRACT-PRE",
+          "name": "合約預審意見",
+          "required": true,
+          "note": "採購/法務對條款的初步意見"
+        },
+        {
+          "code": "CONTRACT-DRAFT",
+          "name": "合約草稿",
+          "required": true,
+          "note": "含 SLA、驗收標準、付款節點、罰則"
+        },
+        {
+          "code": "LEGAL",
+          "name": "法務與資安審查意見",
+          "required": true,
+          "note": "個資、委外、資安條款審查"
+        },
+        {
+          "code": "CONTRACT-SIGN",
+          "name": "合約簽呈與用印紀錄",
+          "required": true,
+          "note": "正本歸檔位置要記在備註"
+        }
+      ]
+    },
+    {
+      "code": "S06",
+      "seq": 6,
+      "name": "建置與導入",
+      "purpose": "把環境與系統做出來",
+      "exit_gate": "環境建置完成並通過基本功能檢核",
+      "docs": [
+        {
+          "code": "ARCH",
+          "name": "架構設計書",
+          "required": true,
+          "note": "邏輯/實體架構、網段、介接流向"
+        },
+        {
+          "code": "ENV-BUILD",
+          "name": "環境建置紀錄",
+          "required": true,
+          "note": "主機規格、版本、參數、變更紀錄"
+        },
+        {
+          "code": "MIG-PLAN",
+          "name": "移轉／導入計畫",
+          "required": true,
+          "note": "分批策略、資料搬遷、平行運作期間"
+        },
+        {
+          "code": "ACCT-MTX",
+          "name": "帳號權限矩陣",
+          "required": false,
+          "note": "涉及權限託管的專案必繳"
+        }
+      ]
+    },
+    {
+      "code": "S07",
+      "seq": 7,
+      "name": "測試與驗證",
+      "purpose": "證明它真的能用、而且安全",
+      "exit_gate": "UAT 通過且資安檢測無高風險未處理項",
+      "docs": [
+        {
+          "code": "TEST-PLAN",
+          "name": "測試計畫",
+          "required": true,
+          "note": "測試範圍、環境、資料、通過標準"
+        },
+        {
+          "code": "TEST-CASE",
+          "name": "測試案例與執行結果",
+          "required": true,
+          "note": "含缺失追蹤與回歸測試紀錄"
+        },
+        {
+          "code": "UAT",
+          "name": "UAT 使用者驗收測試報告",
+          "required": true,
+          "note": "須有使用單位簽署"
+        },
+        {
+          "code": "SEC-SCAN",
+          "name": "資安檢測報告",
+          "required": true,
+          "note": "弱掃／滲透測試與修補確認"
+        }
+      ]
+    },
+    {
+      "code": "S08",
+      "seq": 8,
+      "name": "上線切換",
+      "purpose": "在不弄壞現行作業的前提下切過去",
+      "exit_gate": "切換完成且服務正常，回復方案未啟用",
+      "docs": [
+        {
+          "code": "CUTOVER",
+          "name": "上線切換計畫",
+          "required": true,
+          "note": "逐分鐘的切換工序與負責人"
+        },
+        {
+          "code": "ROLLBACK",
+          "name": "回復方案",
+          "required": true,
+          "note": "觸發條件、回復步驟、決策者"
+        },
+        {
+          "code": "DRILL",
+          "name": "切換演練紀錄",
+          "required": false,
+          "note": "重大系統強烈建議先演練"
+        },
+        {
+          "code": "GO-LIVE",
+          "name": "上線通知與公告",
+          "required": true,
+          "note": "對使用單位的正式告知"
+        }
+      ]
+    },
+    {
+      "code": "S09",
+      "seq": 9,
+      "name": "驗收與結案",
+      "purpose": "把責任交出去、把案子關掉",
+      "exit_gate": "驗收報告核決、維運交接完成",
+      "docs": [
+        {
+          "code": "ACCEPT",
+          "name": "驗收報告",
+          "required": true,
+          "note": "對照合約驗收標準逐項確認"
+        },
+        {
+          "code": "TRAINING",
+          "name": "教育訓練紀錄",
+          "required": true,
+          "note": "含教材與簽到表"
+        },
+        {
+          "code": "OPS-HANDOVER",
+          "name": "維運交接文件",
+          "required": true,
+          "note": "操作手冊、監控項目、故障處理、聯絡窗口"
+        },
+        {
+          "code": "CLOSE",
+          "name": "結案報告",
+          "required": true,
+          "note": "效益回顧、經驗教訓、未結事項移交"
+        }
+      ]
+    }
+  ]
+}

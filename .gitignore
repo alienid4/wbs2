@@ -1,0 +1,18 @@
+# 真實營運資料——含真實廠商、人名、內部專案內容，不進版控
+data/wbs.db
+data/backups/
+data/.sync_state.json
+
+# 執行期產物
+start.log
+__pycache__/
+*.pyc
+
+# 舊版本備份（本機保留即可，不用進 repo）
+_backup_pre_v2/
+
+# 個人化設定
+.claude/settings.local.json
+
+# 雜項參考檔（舊版匯出、跟本系統無關的截圖/簡報），不是原始碼，本機保留即可
+docs/
