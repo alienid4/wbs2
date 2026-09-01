@@ -14,5 +14,13 @@ _backup_pre_v2/
 # 個人化設定
 .claude/settings.local.json
 
+# 每台機器自己的設定，含 sync_token 等機密值——不進版控，跟 data/ 同一個道理。
+# 2026-08-31 起改成這樣：之前這個檔案有被 git 追蹤，但塞了 sync_token 之後
+# commit 被 Claude Code 的安全機制擋下（合理），乾脆整個停止追蹤。
+config.json
+
+# 本機參考筆記，不是專案文件，不用進 repo
+SERVER_SYNC_README.md
+
 # 雜項參考檔（舊版匯出、跟本系統無關的截圖/簡報），不是原始碼，本機保留即可
 docs/

@@ -4,10 +4,15 @@ let currentPerson = null;  // Server 模式登入後的自己；單機版一律�
 // 沒登入（單機版）或我是 manager/admin 一律能改；一般使用者只能改自己負責的。
 // 純粹前端判斷用來決定「要不要把欄位灰掉」，真正擋下的防線在後端，這裡只是不要
 // 讓看起來能改、點下去才被 403 打回票，體驗上很奇怪。
-function canEditTask(owner) {
+function canEditTask(owner, projectId) {
   if (!currentPerson) return true;
   if (currentPerson.role !== "user") return true;
-  return (owner || "") === currentPerson.name;
+  if ((owner || "") === currentPerson.name) return true;
+  // 專案的主要／協同負責人也能改這個專案裡的任何工作項目，不用先升級成 manager
+  // ——跟後端 server.py 的 _can_edit_project 同一套規則。
+  const proj = projectId != null ? projects.find(p => p.id === projectId) : null;
+  if (!proj) return false;
+  return proj.owner === currentPerson.name || (proj.co_owners || []).includes(currentPerson.name);
 }
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
@@ -105,7 +110,7 @@ async function loadToday() {
   ].map(([c, v, l]) => `<div class="kpi ${v ? c : ""}"><b>${v}</b><span>${l}</span></div>`).join("");
 
   const item = t => {
-    const locked = !canEditTask(t.owner);
+    const locked = !canEditTask(t.owner, t.project_id);
     const dis = locked ? " disabled" : "";
     return `
     <div class="item f-${t.flag} ${locked ? "rowLocked" : ""}" data-id="${t.id}"
@@ -212,11 +217,11 @@ async function saveTask(patch, revert) {
 // 不管你在「WBS 表」還是「文件與階段」都看得到，回報用的資訊不該藏在一次點擊之後。
 function projectSectionHTML() {
   return `
-    <div class="projhd"><h2></h2></div>
-    <div class="toolbar projtools">
+    <div class="projhd projtools">
+      <h2></h2><p class="sub ownerLine"></p>
+      <span class="spacer"></span>
       <button class="ghost scanBtn">掃描文件目錄</button>
       <button class="ghost mkdirBtn">建立目錄骨架</button>
-      <span class="spacer"></span>
       <span class="sub scanInfo"></span>
     </div>
     <div class="projhero"></div>
@@ -283,6 +288,16 @@ async function renderProjectPage(pid) {
     api(`/api/projects/${pid}/state`), api(`/api/projects/${pid}/docs`),
   ]);
   await ensurePeople();
+  // 使用者反映：每個專案頁面應該看得到負責人是誰，不用切去設定頁才知道。
+  // 主要負責人 + 協同負責人（如果有）一起顯示在標題底下。
+  // textContent 賦值不用 esc()——esc() 是給 innerHTML 用的 HTML 跳脫，
+  // textContent 本身就不會被當成標籤解析，先跳脫反而會把 & 這類字元顯示成雙重跳脫。
+  const ownerLine = st.project.owner || (st.project.co_owners || []).length
+    ? `主要負責人：${st.project.owner || "（未指派）"}` +
+      ((st.project.co_owners || []).length ? `　協同：${st.project.co_owners.join("、")}` : "")
+    : "尚未指派負責人";
+  const hdSub = section.querySelector(".projhd .ownerLine");
+  if (hdSub) hdSub.textContent = ownerLine;
   renderProjectTools(pid, section);
   renderProjectHero(section, st, d);
   renderWbsPanel(pid, section, st);
@@ -412,11 +427,12 @@ function stageDetailHTML(stage, docStage, tasks, pid) {
       <h2>${esc(stage.code)} ${esc(stage.name)}</h2>
       <p class="purpose">${esc(stage.purpose || "—")}<br>出場條件：${esc(stage.exit_gate || "—")}</p>
       ${stageTasks.length ? `<ul class="dtasks">${stageTasks.map(t => {
-        const locked = !canEditTask(t.owner);
+        const locked = !canEditTask(t.owner, pid);
+        const nameAttr = locked ? "" : ` contenteditable data-id="${t.id}"`;
         return `
         <li class="${t.status === "已完成" ? "done" : t.status === "進行中" ? "now" : ""} ${locked ? "rowLocked" : ""}"
             ${locked ? 'title="這不是你負責的項目，只有主管/管理者能改"' : ""}>
-          <span class="dtname">${esc(t.name)}</span>
+          <span class="dtname"${nameAttr}>${esc(t.name)}</span>
           <span class="dtdates">
             <input type="date" class="dtdate" data-id="${t.id}" data-k="planned_start"
                    value="${esc(t.planned_start || "")}" data-orig="${esc(t.planned_start || "")}"${locked ? " disabled" : ""}>
@@ -426,20 +442,32 @@ function stageDetailHTML(stage, docStage, tasks, pid) {
           </span>
         </li>`;
       }).join("")}</ul>` : '<p class="sub">此階段目前無工作項目。</p>'}
+      <button class="ghost heroAddTask" data-code="${esc(stage.code)}" style="margin-top:6px">＋ 新增工作項目</button>
       <button class="ghost gotoDocs" data-code="${esc(stage.code)}">在「文件與階段」編輯 →</button>
     </div>
     <div class="ddocs">
       <div class="dhd">本階段應繳文件</div>
       ${docs.length ? docs.map(x => {
-        // 掃到檔案就讓名稱本身可以點開下載——不然使用者在這個精簡視圖只看得到
-        // 「交了沒」，看不到「交的是哪個檔案」，還要跳去文件與階段子分頁才能點。
-        const nameHTML = x.latest
-          ? `<a href="/api/docs/file/${x.latest.id}" target="_blank" rel="noopener">${esc(x.name)}</a>`
-          : esc(x.name);
+        // 名稱本身可以直接改（跟「文件與階段」子分頁同一套 contenteditable），
+        // 下載另外用一個小圖示連結——名稱跟下載連結分開，不然 contenteditable
+        // 跟 <a> 點擊行為會互相打架（到底是要編輯還是要開新分頁下載）。
+        // 同一個代碼底下可以有多份檔案（每次上傳自動存成新版次，不會互相覆蓋——
+        // 兩家廠商各自的 SOP 都可以上傳，用版次+日期區分），這裡用一個數字徽章
+        // 提示「不只一份」，完整清單/下載每一份還是要去「文件與階段」子分頁。
+        const dlHTML = x.latest
+          ? `<a class="dl" href="/api/docs/file/${x.latest.id}" target="_blank" rel="noopener" title="下載最新一份">📎</a>` : "";
+        const countBadge = x.files && x.files.length > 1
+          ? `<span class="filecount" title="這個項目底下已經有 ${x.files.length} 份檔案，完整清單請至「文件與階段」子分頁">${x.files.length} 份</span>` : "";
         return `<div class="docit ${x.ready ? "ready" : ""} ${x.required ? "" : "opt"}">
-          <span class="box"></span>${nameHTML}${x.required ? "" : '<span class="tag">選繳</span>'}
+          <span class="box"></span>
+          <span contenteditable class="heroDocName" data-id="${x.id}">${esc(x.name)}</span>${dlHTML}${countBadge}
+          <button class="ghost heroUpload" data-id="${x.id}" title="上傳一份檔案（同一項目可以上傳多份，各自留存不會互相覆蓋）">📤</button>
+          <input type="file" class="heroUploadInput" data-id="${x.id}" style="display:none">
+          <label class="sub" style="white-space:nowrap"><input type="checkbox" class="heroReqToggle"
+            data-id="${x.id}" ${x.required ? "checked" : ""}> 必繳</label>
         </div>`;
       }).join("") : '<p class="sub">此階段未設定應繳文件。</p>'}
+      <button class="ghost heroAddDoc" data-stage="${esc(stage.code)}" style="margin-top:6px">＋ 新增文件項目</button>
     </div>
   </div>`;
 }
@@ -478,6 +506,74 @@ function renderProjectHero(section, st, d) {
 
   const gotoBtn = box.querySelector(".gotoReport");
   if (gotoBtn) gotoBtn.onclick = () => $('#tabs button[data-tab="report"]').click();
+
+  // 精簡視圖直接能上傳，不用先跳去「文件與階段」子分頁——跟那邊同一支 API，
+  // 上傳成功後整頁重新渲染，兩個視圖看到的都是最新狀態。
+  $$(".heroUpload", box).forEach(btn => btn.onclick = () =>
+    box.querySelector(`.heroUploadInput[data-id="${btn.dataset.id}"]`).click());
+  $$(".heroUploadInput", box).forEach(inp => inp.onchange = async () => {
+    const file = inp.files[0];
+    if (!file) return;
+    toast("上傳中…");
+    const fd = new FormData();
+    fd.append("file", file);
+    try {
+      const r = await fetch(`/api/docreq/${inp.dataset.id}/upload`, { method: "POST", body: fd });
+      const j = await r.json();
+      if (!r.ok || j.error) { toast(j.error || "上傳失敗"); return; }
+      toast(`已上傳「${j.filename}」，比對成功`);
+      renderProjectPage(pid);
+    } catch (e) {
+      toast("上傳失敗：" + (e.message || e));
+    }
+  });
+  $$(".heroReqToggle", box).forEach(cb => {
+    cb.onclick = e => e.stopPropagation();
+    cb.onchange = async () => {
+      try {
+        await post(`/api/docreq/${cb.dataset.id}`, { required: cb.checked });
+        toast(cb.checked ? "已設為必繳" : "已設為選繳");
+        renderProjectPage(pid);
+      } catch (e) {
+        cb.checked = !cb.checked; toast(e.message || "儲存失敗");
+      }
+    };
+  });
+  $$(".heroDocName", box).forEach(el => {
+    el.onclick = e => e.stopPropagation();
+    el.onmousedown = e => e.stopPropagation();
+    const orig = el.textContent;
+    el.onblur = async () => {
+      const v = el.textContent.trim();
+      if (v === orig || !v) { if (!v) el.textContent = orig; return; }
+      try {
+        await post(`/api/docreq/${el.dataset.id}`, { name: v });
+        toast("已儲存");
+      } catch (e) {
+        el.textContent = orig; toast(e.message || "儲存失敗");
+      }
+    };
+    el.onkeydown = e => { if (e.key === "Enter") { e.preventDefault(); el.blur(); } };
+  });
+  $$(".heroAddDoc", box).forEach(btn => btn.onclick = async e => {
+    e.stopPropagation();
+    const name = prompt("新文件項目名稱：\n（例如廠商臨時提供的資料——不確定會不會一直需要沒關係，"
+      + "先建起來，新增的項目預設「選繳」不擋階段關卡，之後確定要當必繳條件的話，"
+      + "在項目旁邊勾選「必繳」就好）");
+    if (!name || !name.trim()) return;
+    const doc_code = prompt("請輸入文件代碼（英數字，同一階段內須唯一，例如 XXX-YYY）：");
+    if (!doc_code || !doc_code.trim()) return;
+    try {
+      await post("/api/docreq", {
+        project_id: pid, stage_code: btn.dataset.stage,
+        doc_code: doc_code.trim(), name: name.trim(), required: false,
+      });
+      toast("已新增（預設選繳，不會擋住階段關卡）");
+      renderProjectPage(pid);
+    } catch (err) {
+      toast(err.message || "新增失敗");
+    }
+  });
 
   $$(".sp-node", box).forEach(el => el.onclick = e => {
     if (e.target.closest(".sp-name, .spdate")) return; // 點名稱/日期是要編輯，不是要選站
@@ -582,6 +678,35 @@ function renderProjectHero(section, st, d) {
     const ok = await saveTask({ id: +inp.dataset.id, [inp.dataset.k]: inp.value },
       () => { inp.value = inp.dataset.orig; });
     if (ok) { toast("已更新"); renderProjectPage(pid); }
+  });
+  // 名稱一樣直接點著改，同一筆任務紀錄，跟 WBS 表同步——不用跳頁。
+  $$(".dtname[contenteditable]", box).forEach(el => {
+    const orig = el.textContent;
+    el.onblur = async () => {
+      const v = el.textContent.trim();
+      if (v === orig || !v) { if (!v) el.textContent = orig; return; }
+      const ok = await saveTask({ id: +el.dataset.id, name: v }, () => { el.textContent = orig; });
+      if (ok) toast("已更新");
+    };
+    el.onkeydown = e => { if (e.key === "Enter") { e.preventDefault(); el.blur(); } };
+  });
+  // 使用者明講：想直接在這個階段細節圖上加工作項目，比跳去 WBS 表直覺——
+  // 新增的是普通工作項目（L0），直接掛在目前這一站，名稱先用 prompt 問，
+  // 日期留空，加完在清單裡用日期欄位直接填（同一套已經有的編輯機制）。
+  $$(".heroAddTask", box).forEach(btn => btn.onclick = async () => {
+    const name = prompt("新工作項目名稱：");
+    if (!name || !name.trim()) return;
+    try {
+      await post("/api/tasks", {
+        project_id: pid, name: name.trim(), status: "未開始", progress: 0,
+        level: "L0", stage_code: btn.dataset.code,
+        wbs_no: "NEW" + (st.tasks.length + 1) + "_" + Date.now().toString(36),
+      });
+      toast("已新增，記得補上開始/結束日期");
+      renderProjectPage(pid);
+    } catch (e) {
+      toast(e.message || "新增失敗");
+    }
   });
 }
 
@@ -1016,7 +1141,7 @@ function fillWbsTable(table, allTasks, stages, peopleList) {
   const th = `<th><input type="checkbox" class="chkAll" title="全選"></th><th></th>` +
     COLS.map(([, label, , adv]) => `<th${adv ? ' class="advcol"' : ""}>${label}</th>`).join("") + "<th></th>";
   const rows = tasks.map(t => {
-    const locked = !canEditTask(t.owner);
+    const locked = !canEditTask(t.owner, t.project_id);
     const dis = locked ? " disabled" : "";
     const tds = COLS.map(([k, , ed, adv]) => {
       let v = t[k]; if (v === null || v === undefined) v = "";
@@ -1704,6 +1829,9 @@ function renderDocsPanel(pid, section, d) {
             <div class="docact">
               <button class="ghost upload" data-id="${x.id}">📤 上傳</button>
               <input type="file" class="uploadInput" data-id="${x.id}" style="display:none">
+              <label class="sub docprog" style="white-space:nowrap">
+                <input type="checkbox" class="reqToggle" data-id="${x.id}" ${x.required ? "checked" : ""}> 必繳
+              </label>
               <label class="sub docprog" style="white-space:nowrap">承辦
                 <select class="docowner" data-id="${x.id}">
                   <option value="">（未指派）</option>${people.map(p =>
@@ -1811,6 +1939,18 @@ function renderDocsPanel(pid, section, d) {
       }
     };
   });
+  $$(".reqToggle", body).forEach(cb => {
+    cb.onclick = e => e.stopPropagation();
+    cb.onchange = async () => {
+      try {
+        await post(`/api/docreq/${cb.dataset.id}`, { required: cb.checked });
+        toast(cb.checked ? "已設為必繳" : "已設為選繳");
+        rerenderAll();
+      } catch (e) {
+        cb.checked = !cb.checked; toast(e.message || "儲存失敗");
+      }
+    };
+  });
   $$(".docowner", body).forEach(sel => {
     sel.onclick = e => e.stopPropagation();
     sel.onchange = async () => {
@@ -1860,16 +2000,18 @@ function renderDocsPanel(pid, section, d) {
   });
   $$(".addDoc", body).forEach(btn => btn.onclick = async e => {
     e.stopPropagation();
-    const name = prompt("新文件項目名稱：");
+    const name = prompt("新文件項目名稱：\n（例如廠商臨時提供的資料，像「POC 架構圖」——不確定會不會一直需要沒關係，"
+      + "先建起來，新增的項目預設「選繳」不擋階段關卡，之後確定要當必繳條件的話，"
+      + "在項目旁邊勾選「必繳」就好）");
     if (!name || !name.trim()) return;
     const doc_code = prompt("請輸入文件代碼（英數字，同一階段內須唯一，例如 XXX-YYY）：");
     if (!doc_code || !doc_code.trim()) return;
     try {
       await post("/api/docreq", {
         project_id: pid, stage_code: btn.dataset.stage,
-        doc_code: doc_code.trim(), name: name.trim(), required: true,
+        doc_code: doc_code.trim(), name: name.trim(), required: false,
       });
-      toast("已新增"); rerenderAll();
+      toast("已新增（預設選繳，不會擋住階段關卡）"); rerenderAll();
     } catch (e) {
       toast(e.message || "新增失敗");
     }
@@ -1952,8 +2094,17 @@ const CFG_FIELDS = [
 const ROLE_LABEL = { user: "一般使用者", manager: "主管", admin: "管理者" };
 function renderPeopleBody() {
   const isAdmin = currentPerson && currentPerson.role === "admin";
+  const canManage = !currentPerson || isAdmin;  // 單機版沒有登入概念，等同管理者
   $("#peopleBody").innerHTML = people.length
-    ? people.map(p => `<span class="personTag">${esc(p.name)}
+    ? people.map(p => `<span class="personTag">${canManage
+          ? `<span class="personName" contenteditable data-id="${p.id}" data-orig="${esc(p.name)}"
+              title="改名會連帶更新這個人現有負責的所有工作項目/專案/文件，不會變成孤兒資料">${esc(p.name)}</span>`
+          : esc(p.name)}
+        ${currentPerson ? (isAdmin
+            ? `<input class="usernameInp" data-id="${p.id}" data-name="${esc(p.name)}"
+                placeholder="登入帳號（可留空，留空用姓名登入）" value="${esc(p.username || "")}"
+                style="width:150px">`
+            : (p.username ? `<i class="sub" title="登入帳號">＠${esc(p.username)}</i>` : "")) : ""}
         ${currentPerson && isAdmin
             ? `<select class="roleSel" data-id="${p.id}" data-name="${esc(p.name)}">
                 ${["user", "manager", "admin"].map(r =>
@@ -1983,6 +2134,39 @@ function renderPeopleBody() {
     } catch (e) {
       toast(e.message || "重設失敗");
     }
+  });
+  $$(".personName", $("#peopleBody")).forEach(el => {
+    el.onclick = e => e.stopPropagation();
+    el.onkeydown = e => { if (e.key === "Enter") { e.preventDefault(); el.blur(); } };
+    el.onblur = async () => {
+      const v = el.textContent.trim();
+      const orig = el.dataset.orig;
+      if (v === orig || !v) { if (!v) el.textContent = orig; return; }
+      if (!confirm(`確定把「${orig}」改名為「${v}」？\n（這個人現有負責的所有工作項目/專案/文件會一起更新成新名字，不會變成孤兒資料）`)) {
+        el.textContent = orig; return;
+      }
+      try {
+        await post("/api/people/rename", { id: +el.dataset.id, name: v });
+        toast(`已把「${orig}」改名為「${v}」`);
+        people = []; await ensurePeople(); renderPeopleBody();
+      } catch (e) {
+        el.textContent = orig; toast(e.message || "改名失敗");
+      }
+    };
+  });
+  $$(".usernameInp", $("#peopleBody")).forEach(inp => {
+    const orig = inp.value;
+    inp.onblur = async () => {
+      if (inp.value === orig) return;
+      try {
+        await post("/api/people/set-username", { id: +inp.dataset.id, username: inp.value.trim() });
+        toast(inp.value.trim() ? `已設定「${inp.dataset.name}」的登入帳號` : `已清除「${inp.dataset.name}」的登入帳號`);
+        people = []; await ensurePeople(); renderPeopleBody();
+      } catch (e) {
+        inp.value = orig; toast(e.message || "設定失敗");
+      }
+    };
+    inp.onkeydown = e => { if (e.key === "Enter") { e.preventDefault(); inp.blur(); } };
   });
   $$(".roleSel", $("#peopleBody")).forEach(sel => sel.onchange = async () => {
     try {
@@ -2301,14 +2485,15 @@ $("#testEmail").onclick = async () => {
 
 /* ---------------------------------------------------------- 版本徽章 */
 // 不做即時跳動的時鐘——作業系統本來就有，戰情室式重複顯示沒有意義。這裡顯示的是
-// 「上次啟動時間」：只有你真的重開 start.bat 才會變，是「畫面上跑的是不是今天改過
-// 的新程式碼」唯一可信的證據；版號是手動維護的數字，改了程式碼忘記重啟一樣會顯示
-// 新版號，容易誤判「已經生效」。
+// 「資料上次被存檔的時間」（db 檔案的 mtime，任何一筆存檔都會更新），不是伺服器
+// 行程啟動時間——使用者要看的是「有沒有人在動資料、上次動是什麼時候」，不是
+// 「程式碼有沒有重開」（後者是我們部署時自己要確認的事，藏在 title 提示文字裡，
+// 不用佔掉畫面上的主要位置）。
 async function loadVersion() {
   try {
     const v = await api("/api/version");
     $("#hdrVer").innerHTML =
-      `<span title="服務程序啟動時間，重新啟動 start.bat 後更新">上次啟動 ${esc(v.started_at)}</span>
+      `<span title="服務程序啟動時間：${esc(v.started_at)}">上次存檔 ${esc(v.data_modified_at || "—")}</span>
        <b>v${esc(v.version)}</b>`;
   } catch {
     // 刻意不悄悄不顯示——這個徽章存在的目的就是讓人看出「新程式碼有沒有生效」，
@@ -2333,11 +2518,19 @@ async function showLogin() {
   // /api/auth/login-names，登入前就打得到），保留「可以直接選」的方便，
   // 同時還是一個真正的文字欄位。記住上次登入的人，下次開啟直接幫他填好，
   // 只要輸密碼、讓瀏覽器記住的密碼自動帶出來就好。
-  $("#loginNameInput").value = localStorage.getItem(LAST_LOGIN_NAME_KEY) || "";
+  const nameInp = $("#loginNameInput");
+  nameInp.value = localStorage.getItem(LAST_LOGIN_NAME_KEY) || "";
   try {
     const names = await api("/api/auth/login-names");
     $("#loginNameList").innerHTML = names.map(n => `<option value="${esc(n)}">`).join("");
   } catch { /* 名單抓不到也不擋登入畫面，使用者還是能手動打名字 */ }
+  // datalist 是用目前欄位內容去做前綴比對——欄位已經預填上次登入的名字時，
+  // 點開下拉只會看到跟那個名字前綴相符的選項，其他人名全被濾掉、等於看不到清單。
+  // 聚焦時先清空讓完整名單跳出來，若離開時使用者沒有另外選/打，再把原本的名字還原。
+  nameInp.onfocus = () => { nameInp.dataset.prevVal = nameInp.value; nameInp.value = ""; };
+  nameInp.onblur = () => {
+    if (!nameInp.value && nameInp.dataset.prevVal) nameInp.value = nameInp.dataset.prevVal;
+  };
 }
 function hideLogin() {
   $("#loginOverlay").style.display = "none";
@@ -2382,6 +2575,31 @@ $("#loginForm").onsubmit = async (e) => {
 $("#logoutBtn").onclick = async () => {
   await post("/api/auth/logout", {});
   location.reload();
+};
+
+$("#changePwBtn").onclick = () => {
+  $("#cpOldPassword").value = ""; $("#cpNewPassword").value = ""; $("#cpNewPassword2").value = "";
+  $("#cpMsg").textContent = "";
+  $("#changePwOverlay").style.display = "flex";
+};
+$("#cpCancelBtn").onclick = () => { $("#changePwOverlay").style.display = "none"; };
+$("#changePwForm").onsubmit = async (e) => {
+  e.preventDefault();
+  $("#cpMsg").textContent = "";
+  if ($("#cpNewPassword").value !== $("#cpNewPassword2").value) {
+    $("#cpMsg").textContent = "兩次輸入的新密碼不一樣";
+    return;
+  }
+  try {
+    await post("/api/auth/change-password", {
+      old_password: $("#cpOldPassword").value,
+      new_password: $("#cpNewPassword").value,
+    });
+    $("#changePwOverlay").style.display = "none";
+    toast("密碼已修改");
+  } catch (err) {
+    $("#cpMsg").textContent = err.message || "修改失敗";
+  }
 };
 
 function showWhoami(person) {

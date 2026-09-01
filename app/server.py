@@ -253,8 +253,27 @@ def _rename_wbs_cascade(project_id, old_no, new_no):
     return n
 
 
+def _rename_person_cascade(pid, old_name, new_name):
+    """幫人員改名，同時把所有現有指派這個人的地方一起改過去——task/project/doc_req
+    的 owner 欄位都是純文字比對（不是外鍵），改名不連動的話，改完名字那些欄位裡
+    存的還是舊名字，變成查無此人的孤兒字串，比原本打錯字更糟。跟「刪除」刻意不
+    同調：刪除本來就是要讓這個人從名單消失，不該去動歷史紀錄；改名是同一個人
+    換了個寫法，兩者語意不同。"""
+    with db.conn() as c:
+        c.execute("UPDATE person SET name=? WHERE id=?", (new_name, pid))
+        for table in ("task", "project", "doc_req"):
+            c.execute(f"UPDATE {table} SET owner=? WHERE owner=?", (new_name, old_name))
+        c.execute("UPDATE project_owner SET person_name=? WHERE person_name=?",
+                 (new_name, old_name))
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "CL_WBS/1.0"
+
+    def version_string(self):
+        # 預設會把 Python 版本附加在 Server header 裡（例如 "CL_WBS/1.0 Python/3.9.25"），
+        # 等於白送弱掃系統一個可以挑對應已知漏洞的版本號，只回自己的版本字串。
+        return self.server_version
 
     def log_message(self, fmt, *args):
         pass
@@ -267,6 +286,11 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        # 弱掃基本款安全 header——這個系統沒有第三方會嵌 iframe、沒有跨站資源
+        # 需求，全部關掉是安全的預設值，不影響現有功能。
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header("Referrer-Policy", "same-origin")
         for k, v in (extra or {}).items():
             self.send_header(k, v)
         self.end_headers()
@@ -309,6 +333,19 @@ class Handler(BaseHTTPRequestHandler):
         """manager 或 admin 都能編輯別人負責的工作項目，一般使用者不行。"""
         return bool(actor) and actor["role"] in ("manager", "admin")
 
+    def _can_edit_project(self, actor, project_id):
+        """一般使用者原則上只能改自己名下的項目，但專案的主要／協同負責人是
+        例外——副手既然掛名一起扛這個專案，就該能改這個專案裡的任何工作項目，
+        不用先升級成 manager。"""
+        if not actor or not project_id:
+            return False
+        row = db.one("SELECT owner FROM project WHERE id=?", (int(project_id),))
+        if row and (row["owner"] or "") == actor["name"]:
+            return True
+        co = db.one("SELECT 1 FROM project_owner WHERE project_id=? AND person_name=?",
+                    (int(project_id), actor["name"]))
+        return bool(co)
+
     def _login_response(self, person):
         token = _create_session(person["id"])
         cookie = SimpleCookie()
@@ -316,6 +353,7 @@ class Handler(BaseHTTPRequestHandler):
         cookie["wbs_session"]["path"] = "/"
         cookie["wbs_session"]["max-age"] = SESSION_DAYS * 86400
         cookie["wbs_session"]["httponly"] = True
+        cookie["wbs_session"]["samesite"] = "Lax"
         return self._json(
             {"ok": True, "person": {"id": person["id"], "name": person["name"],
                                     "role": person["role"]}},
@@ -399,7 +437,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._static(p)
             return self._api_get(p, q)
         except Exception as e:  # noqa: BLE001
-            return self._err(f"{type(e).__name__}: {e}", 500)
+            _say(f"[!] GET {p} 發生未預期錯誤：{type(e).__name__}: {e}")
+            return self._err("系統發生錯誤，請稍後再試", 500)
 
     def do_POST(self):
         u = urlparse(self.path)
@@ -413,7 +452,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._api_db_snapshot_upload()
             return self._api_post(u.path, parse_qs(u.query), self._body())
         except Exception as e:  # noqa: BLE001
-            return self._err(f"{type(e).__name__}: {e}", 500)
+            _say(f"[!] POST {u.path} 發生未預期錯誤：{type(e).__name__}: {e}")
+            return self._err("系統發生錯誤，請稍後再試", 500)
 
     def _api_upload(self, path, ctype):
         m = re.match(r"^/api/docreq/(\d+)/upload$", path)
@@ -462,6 +502,7 @@ class Handler(BaseHTTPRequestHandler):
         with open(tmp, "wb") as f:
             f.write(data)
         os.replace(tmp, dst)  # 同一個檔案系統上是原子操作，不會留半寫的殘檔
+        db.init_db()  # 換進來的資料庫可能是舊版本存的，立刻補齊欄位，不用等重啟服務
         return self._json(_db_fingerprint())
 
     do_PUT = do_POST
@@ -476,8 +517,9 @@ class Handler(BaseHTTPRequestHandler):
             cur = db.one("SELECT project_id, owner FROM task WHERE id=?", (tid,))
             actor = getattr(self, "_person", None)
             if _auth_required() and actor and not self._can_edit_others(actor) and cur \
-                    and (cur["owner"] or "") != actor["name"]:
-                return self._err("這不是你負責的項目，只有主管/管理者能刪除別人負責的項目", 403)
+                    and (cur["owner"] or "") != actor["name"] \
+                    and not self._can_edit_project(actor, cur["project_id"]):
+                return self._err("這不是你負責的項目，只有主管/管理者/專案負責人能刪除別人負責的項目", 403)
             db.run("DELETE FROM task WHERE id=?", (tid,))
             if cur:
                 core.roll_up_stage_dates(cur["project_id"])
@@ -524,10 +566,19 @@ class Handler(BaseHTTPRequestHandler):
     # ------------------------------------------------------------ GET api
     def _api_get(self, p, q):
         if p == "/api/version":
-            info = {"version": "?", "name": "", "started_at": _PROCESS_STARTED_AT}
+            info = {"version": "?", "name": "", "started_at": _PROCESS_STARTED_AT,
+                    "data_modified_at": None}
             try:
                 with open(os.path.join(db.ROOT, "version.json"), "r", encoding="utf-8") as f:
                     info.update(json.load(f))
+            except OSError:
+                pass
+            try:
+                # 「上次啟動」只回答「程式碼有沒有換新」，不代表「有沒有人在動資料」——
+                # 使用者要的是後者：db 檔最後一次真的被寫入（任何一筆存檔）的時間，
+                # 用檔案的 mtime 就夠準，不用額外開一張表記時間戳。
+                info["data_modified_at"] = dt.datetime.fromtimestamp(
+                    os.path.getmtime(db.db_path())).strftime("%Y-%m-%d %H:%M:%S")
             except OSError:
                 pass
             return self._json(info)
@@ -539,7 +590,7 @@ class Handler(BaseHTTPRequestHandler):
             # 故意不 SELECT *——person 表現在多了 password_hash/password_salt，
             # 這兩欄絕對不能送到前端，就算是自己的雜湊值也不用讓瀏覽器拿到。
             return self._json(db.rows(
-                "SELECT id, name, role, "
+                "SELECT id, name, role, username, "
                 "(password_hash IS NOT NULL) AS has_password "
                 "FROM person ORDER BY name"))
         if p == "/api/auth/me":
@@ -553,7 +604,10 @@ class Handler(BaseHTTPRequestHandler):
             # 給登入頁的姓名下拉選單用——刻意不用 /api/people（那支登入前打不到，
             # 而且會多帶 role/has_password 這些不需要曝光的欄位）。只回名字，
             # 內部小工具，曝光員工姓名清單給還沒登入的人是可接受的取捨。
-            return self._json([r["name"] for r in db.rows("SELECT name FROM person ORDER BY name")])
+            # 有設英文帳號的人，登入頁的建議清單顯示帳號（他們習慣打的就是這個）；
+            # 沒設的人繼續顯示姓名（向下相容，沒有登入帳號一樣能用姓名登入）。
+            return self._json([r["username"] or r["name"]
+                               for r in db.rows("SELECT name, username FROM person ORDER BY name")])
         if p == "/api/projects":
             return self._json(core.projects(include_archived=True))
         if p == "/api/workload":
@@ -622,6 +676,37 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, buf.getvalue(), "text/csv; charset=utf-8",
                               {"Content-Disposition": 'attachment; filename="wbs.csv"'})
 
+        if p == "/api/export/my-tasks":
+            # 給一般使用者的「備份自己的東西」——不是整份資料庫快照（那是管理者的
+            # /api/admin/backup），是只含自己負責項目的 CSV 匯出，存起來當個人紀錄。
+            # 單機版沒有登入概念，沒有「自己」可言，這條路只在 Server 模式、真的
+            # 登入的情況下才有意義。
+            actor = getattr(self, "_person", None)
+            if _auth_required() and not actor:
+                return self._err("尚未登入", 401)
+            my_name = actor["name"] if actor else None
+            buf = io.StringIO()
+            buf.write("﻿專案,項次,層級,階段,工作項目,開始,結束,"
+                      "最晚完成,總浮時,剩餘浮時,狀態,進度,原因,備註\n")
+            for st in core.all_states():
+                if not st:
+                    continue
+                for t in st["tasks"]:
+                    if my_name is not None and (t.get("owner") or "") != my_name:
+                        continue
+                    row = [st["project"]["name"], t["wbs_no"], t["level"],
+                           t.get("stage_code") or "", t["name"],
+                           t["planned_start"], t["planned_end"], t["lf"],
+                           t["total_float"],
+                           t["live_float"] if t["live_float"] is not None else "",
+                           t["status"], t.get("progress") or 0, t["flag_reason"],
+                           (t.get("note") or "").replace("\n", " ")]
+                    buf.write(",".join('"' + str(x).replace('"', '""') + '"'
+                                       for x in row) + "\n")
+            fname = f"我的工作項目_{my_name}.csv" if my_name else "my_tasks.csv"
+            return self._send(200, buf.getvalue(), "text/csv; charset=utf-8",
+                              _dl_headers("my_tasks.csv", fname))
+
         m = re.match(r"^/api/report/([0-9\-]+)/md$", p)
         if m:
             r = db.one("SELECT * FROM report WHERE week_end=?", (m.group(1),))
@@ -681,7 +766,9 @@ class Handler(BaseHTTPRequestHandler):
             locked_min = _check_login_rate_limit(name)
             if locked_min:
                 return self._err(f"這個帳號登入失敗太多次，請等 {locked_min} 分鐘後再試", 429)
-            person = db.one("SELECT * FROM person WHERE name=?", (name,))
+            # 輸入值可能是中文姓名，也可能是英文登入帳號（username）——兩邊都比對，
+            # 對使用者來說「打哪個都能登入」，不用強迫他們改用英文帳號登入。
+            person = db.one("SELECT * FROM person WHERE username=? OR name=?", (name, name))
             if not person:
                 _record_login_failure(name)
                 return self._err("查無此人，請先請管理者把你加進人員名單", 400)
@@ -736,7 +823,27 @@ class Handler(BaseHTTPRequestHandler):
             cookie["wbs_session"] = ""
             cookie["wbs_session"]["path"] = "/"
             cookie["wbs_session"]["max-age"] = 0
+            cookie["wbs_session"]["samesite"] = "Lax"
             return self._json({"ok": True}, extra={"Set-Cookie": cookie["wbs_session"].OutputString()})
+
+        if p == "/api/auth/change-password":
+            # 自己改自己的密碼，任何角色都能用（不用管理者），跟「重設密碼」不一樣：
+            # 重設是管理者清空 hash 讓本人下次登入自助認領，這裡是已經登入的狀態下
+            # 直接換一組新密碼，要先驗證舊密碼才准改，不是誰有 session 誰就能改。
+            actor = getattr(self, "_person", None)
+            if not actor:
+                return self._err("尚未登入", 401)
+            person = db.one("SELECT * FROM person WHERE id=?", (actor["id"],))
+            old_pw = body.get("old_password") or ""
+            new_pw = body.get("new_password") or ""
+            if not _verify_password(old_pw, person["password_salt"], person["password_hash"]):
+                return self._err("目前的密碼不對", 400)
+            if len(new_pw) < MIN_PASSWORD_LEN:
+                return self._err(f"新密碼至少要 {MIN_PASSWORD_LEN} 個字元", 400)
+            h, salt = _hash_password(new_pw)
+            db.run("UPDATE person SET password_hash=?, password_salt=? WHERE id=?",
+                   (h, salt, actor["id"]))
+            return self._json({"ok": True})
 
         if p == "/api/people/reset-password":
             # 忘記密碼沒有 IT 部門能重設——admin 把 hash 清空，等於幫他退回「還沒設過
@@ -748,6 +855,30 @@ class Handler(BaseHTTPRequestHandler):
             if not pid:
                 return self._err("缺少 id", 400)
             db.run("UPDATE person SET password_hash=NULL, password_salt=NULL WHERE id=?", (int(pid),))
+            return self._json({"ok": True})
+
+        if p == "/api/people/rename":
+            # 改的是「這個人叫什麼」（例如打錯字要修正），不是換一個人——所以刻意跟
+            # 「刪除」不同調：刪除不動既有任務/文件上已經填的負責人字串（那是真的換
+            # 掉一個人），改名要把所有現有指派這個人的地方一起改過去，不然改完名字
+            # WBS 表上一堆工作項目的負責人會變成「查無此人」的孤兒字串，比原本的
+            # 打錯字更糟。只有管理者能改，一般人打錯字自己看得到但改不動，避免亂改。
+            if self._require_admin():
+                return None
+            pid = body.get("id")
+            new_name = (body.get("name") or "").strip()
+            if not pid or not new_name:
+                return self._err("id、name 都要填", 400)
+            old = db.one("SELECT name FROM person WHERE id=?", (int(pid),))
+            if not old:
+                return self._err("查無此人", 400)
+            old_name = old["name"]
+            if old_name == new_name:
+                return self._json({"ok": True, "renamed": 0})
+            try:
+                _rename_person_cascade(int(pid), old_name, new_name)
+            except sqlite3.IntegrityError:
+                return self._err(f"「{new_name}」已經在名單裡了", 400)
             return self._json({"ok": True})
 
         if p == "/api/people/set-role":
@@ -766,6 +897,22 @@ class Handler(BaseHTTPRequestHandler):
             if int(pid) == actor["id"] and role != "admin":
                 return self._err("不能把自己降級，請先指定另一個管理者再改自己", 400)
             db.run("UPDATE person SET role=? WHERE id=?", (role, int(pid)))
+            return self._json({"ok": True})
+
+        if p == "/api/people/set-username":
+            # 給習慣用英文帳號登入的人設一個登入用的帳號，跟「負責人」顯示用的
+            # 中文姓名分開——name 欄位不動，WBS/文件的擁有者比對完全不受影響。
+            # 只有管理者能設，避免一般使用者亂改別人的登入方式。
+            if self._require_admin():
+                return None
+            pid = body.get("id")
+            if not pid:
+                return self._err("缺少 id", 400)
+            username = (body.get("username") or "").strip() or None
+            try:
+                db.run("UPDATE person SET username=? WHERE id=?", (username, int(pid)))
+            except sqlite3.IntegrityError:
+                return self._err(f"帳號「{username}」已經有別人在用了", 400)
             return self._json({"ok": True})
 
         if p == "/api/config":
@@ -877,8 +1024,12 @@ class Handler(BaseHTTPRequestHandler):
             return self._json({"ok": True})
 
         if p == "/api/admin/backup":
-            # 單純存一份備份，不清空、不動目前畫面——跟「清空」共用同一支備份函式，
-            # 差別只在這裡不刪資料、不重新種示範資料。
+            # 存的是整份資料庫（全部專案、全部人的資料），只有管理者能做——一般
+            # 使用者要的「備份自己的東西」走下面的 /api/export/my-tasks（匯出成
+            # CSV，只有自己負責的項目），語意不一樣：這支是系統層級的完整快照，
+            # 那支是個人層級的資料匯出，不是同一件事的兩種權限，是兩件不同的事。
+            if self._require_admin():
+                return None
             also_enc = bool(body.get("also_encrypted"))
             password = body.get("password") or ""
             if also_enc and not password:
@@ -916,6 +1067,11 @@ class Handler(BaseHTTPRequestHandler):
             latest = os.path.join(bdir, files[0])
             import shutil
             shutil.copy2(latest, db.db_path())
+            # 還原完立刻重跑一次 migration，不要等下次重啟服務才補欄位——還原的備份
+            # 檔通常是舊版本存的，缺新版程式碼才加的欄位；不馬上補的話，還原後、
+            # 重啟前這段時間，只要程式一碰到新欄位就會直接噴 SQLite「no such
+            # column」錯誤，使用者會以為是還原失敗，其實只是欄位還沒補上。
+            db.init_db()
             return self._json({"ok": True, "restored": files[0]})
 
         if p == "/api/projects":
@@ -927,12 +1083,13 @@ class Handler(BaseHTTPRequestHandler):
                 if fields.get(k) and sch.d(fields[k]) is None:
                     return self._err(f"「{fields[k]}」不是有效日期，{k} 沒有存入", 400)
             if pid:
-                sets = ",".join(f"{k}=?" for k in fields)
-                try:
-                    db.run(f"UPDATE project SET {sets} WHERE id=?",
-                           (*fields.values(), int(pid)))
-                except sqlite3.IntegrityError:
-                    return self._err(f"專案代號「{fields.get('code')}」已經有別的專案在用，改別的代號", 400)
+                if fields:
+                    sets = ",".join(f"{k}=?" for k in fields)
+                    try:
+                        db.run(f"UPDATE project SET {sets} WHERE id=?",
+                               (*fields.values(), int(pid)))
+                    except sqlite3.IntegrityError:
+                        return self._err(f"專案代號「{fields.get('code')}」已經有別的專案在用，改別的代號", 400)
             else:
                 cols = ",".join(fields)
                 qs = ",".join("?" * len(fields))
@@ -979,10 +1136,11 @@ class Handler(BaseHTTPRequestHandler):
                 # 項目，新建的項目也只能掛在自己名下——不是資料庫層級的隔離，是
                 # 「登入的人只能動自己那份」這個約定的唯一防線，manager/admin 不受此限。
                 actor = getattr(self, "_person", None)
-                if _auth_required() and actor and not self._can_edit_others(actor):
+                if _auth_required() and actor and not self._can_edit_others(actor) \
+                        and not self._can_edit_project(actor, project_id):
                     if cur and (cur["owner"] or "") != actor["name"]:
                         return self._err(
-                            f"「{cur['wbs_no']}」的負責人不是你，只有主管/管理者能改別人負責的項目", 403)
+                            f"「{cur['wbs_no']}」的負責人不是你，只有主管/管理者/專案負責人能改別人負責的項目", 403)
                     if not cur and fields.get("owner") not in (None, "", actor["name"]):
                         return self._err("不能新增指派給別人的工作項目，負責人要是你自己", 403)
                 try:
@@ -1379,9 +1537,33 @@ def main():
         _say(f"    若不是，改 config.json 的 port（例如 8790）再試。")
         _say("=" * 56)
         return
+    # HTTPS 是額外多開一個埠，不取代原本的 HTTP 埠——測試期間兩個並存，
+    # 確認 HTTPS 那邊沒問題、使用者都改用 https:// 之後，再手動把 HTTP 那個關掉
+    # （改 config.json 的 bind_host 或直接不開 tls_enabled 都不會動到這段邏輯，
+    # 純粹是「多開一個」，最小風險的過渡做法）。
+    tls_url = None
+    if cfg.get("tls_enabled"):
+        cert_file, key_file = cfg.get("tls_cert_file") or "", cfg.get("tls_key_file") or ""
+        if not (os.path.isfile(cert_file) and os.path.isfile(key_file)):
+            _say(f"[!] tls_enabled=true 但憑證/私鑰檔案找不到（{cert_file} / {key_file}），"
+                 f"跳過 HTTPS，只開 HTTP。")
+        else:
+            tls_port = int(cfg.get("tls_port", 3443))
+            try:
+                srv_tls = ThreadingHTTPServer((bind_host, tls_port), Handler)
+                ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+                ctx.load_cert_chain(cert_file, key_file)
+                srv_tls.socket = ctx.wrap_socket(srv_tls.socket, server_side=True)
+            except (OSError, ssl.SSLError) as e:
+                _say(f"[!] HTTPS 埠 {tls_port} 啟動失敗（{e}），跳過 HTTPS，只開 HTTP。")
+            else:
+                tls_url = f"https://127.0.0.1:{tls_port}/"
+                threading.Thread(target=srv_tls.serve_forever, daemon=True).start()
     _say("=" * 56)
     _say("  專案 WBS 追蹤系統")
     _say(f"  網址　　：{url}")
+    if tls_url:
+        _say(f"  HTTPS　：{tls_url}（測試用自簽憑證，瀏覽器會先跳警告）")
     _say(f"  文件目錄：{cfg.get('docs_root')}")
     _say("  按 Ctrl+C 結束")
     _say("=" * 56)

@@ -134,6 +134,8 @@ def project_state(project_id, today=None):
     proj = db.one("SELECT * FROM project WHERE id=?", (project_id,))
     if not proj:
         return None
+    proj["co_owners"] = [r["person_name"] for r in db.rows(
+        "SELECT person_name FROM project_owner WHERE project_id=? ORDER BY person_name", (project_id,))]
     tasks = db.rows("SELECT * FROM task WHERE project_id=?", (project_id,))
     tasks.sort(key=lambda t: (t.get("planned_start") or "9999", _natkey(t["wbs_no"])))
     # 承諾日的天花板：凍結後用 baseline_end（唯讀、只能靠重新基準化改），

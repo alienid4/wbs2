@@ -12,8 +12,9 @@
     <h2 id="loginTitle">專案 WBS 追蹤</h2>
     <p class="sub" id="loginHint">這台是共用 Server，請先登入。如果人員名單裡已經有你的名字，
       第一次登入輸入的密碼就會變成你的密碼。</p>
-    <label>姓名</label>
-    <input id="loginNameInput" autocomplete="username" list="loginNameList" required>
+    <label>姓名或登入帳號</label>
+    <input id="loginNameInput" autocomplete="username" list="loginNameList" required
+           placeholder="中文姓名或管理者幫你設定的英文帳號都可以">
     <datalist id="loginNameList"></datalist>
     <label>密碼</label>
     <input id="loginPassword" type="password" autocomplete="current-password" required>
@@ -22,6 +23,20 @@
     <button type="submit" id="loginSubmitBtn">登入</button>
     <button type="button" class="ghost" id="loginToggleMode">名單裡沒有我的名字，我要註冊新帳號</button>
     <div class="sub" id="loginMsg"></div>
+  </form>
+</div>
+<div id="changePwOverlay" class="login-overlay" style="display:none">
+  <form id="changePwForm" class="login-box">
+    <h2>修改密碼</h2>
+    <label>目前的密碼</label>
+    <input id="cpOldPassword" type="password" autocomplete="current-password" required>
+    <label>新密碼</label>
+    <input id="cpNewPassword" type="password" autocomplete="new-password" required>
+    <label>確認新密碼</label>
+    <input id="cpNewPassword2" type="password" autocomplete="new-password" required>
+    <button type="submit">確認修改</button>
+    <button type="button" class="ghost" id="cpCancelBtn">取消</button>
+    <div class="sub" id="cpMsg"></div>
   </form>
 </div>
 <header>
@@ -35,6 +50,7 @@
     </div>
     <div class="whoami" id="whoami" style="display:none">
       <span id="whoamiName"></span>
+      <button class="ghost" id="changePwBtn">修改密碼</button>
       <button class="ghost" id="logoutBtn">登出</button>
     </div>
     <div class="hdrver" id="hdrVer"></div>
@@ -175,10 +191,11 @@
         </label>
         <p class="sub" id="dataOpsMsg"></p>
       </div>
-      <div class="paper">
-        <h2>存備份</h2>
+      <div class="paper adminOnly">
+        <h2>存備份（全部資料）</h2>
         <p class="sub">此功能不會清空資料或重新整理畫面，僅將目前資料另存一份備份，可隨時執行。
-          除必存的 .db 檔（供還原使用）外，可另外勾選是否輸出文字版或加密版。</p>
+          除必存的 .db 檔（供還原使用）外，可另外勾選是否輸出文字版或加密版。這是整份資料庫的
+          完整快照（所有專案、所有人的資料），只有管理者看得到這個功能。</p>
         <label class="sub" style="display:flex;align-items:center;gap:6px">
           <input type="checkbox" id="saveText"> 文字版備份（.sql，明碼可讀）
         </label>
@@ -189,6 +206,14 @@
           <button class="ghost" id="saveBackupBtn">存一份備份</button>
         </div>
         <p class="sub" id="saveBackupMsg"></p>
+      </div>
+      <div class="paper">
+        <h2>匯出我的工作項目</h2>
+        <p class="sub">只匯出你自己負責的工作項目（CSV，可用 Excel 開），存起來當個人紀錄用——
+          不是系統的完整備份，不能拿來還原，單純是「我自己手上有哪些東西」的清單。</p>
+        <div class="toolbar" style="margin-top:8px">
+          <a class="btn ghost" id="myTasksExportBtn" href="/api/export/my-tasks" download>下載我的工作項目 CSV</a>
+        </div>
       </div>
     </div>
   </section>

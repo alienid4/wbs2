@@ -14,7 +14,10 @@ import shutil
 import sqlite3
 import sys
 import tempfile
+import threading
 import unittest
+import urllib.error
+import urllib.request
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, REPO)
@@ -134,6 +137,89 @@ class SmokeTest(unittest.TestCase):
                      (pid, "測試協同丙"))
         by_id = {p["id"]: p for p in core.projects(include_archived=True)}
         self.assertEqual(by_id[pid]["co_owners"], ["測試協同丙"])
+        # project_state()（單一專案頁用的那支）也要看得到協同負責人，不是只有
+        # core.projects()（列表用的那支）——這兩支各自組資料，容易漏改一支
+        st = core.project_state(pid)
+        self.assertEqual(st["project"]["co_owners"], ["測試協同丙"])
+
+    # ---- 資安基本款：Server header 不能洩漏 Python 版本、回應要帶基本安全 header、
+    # 500 錯誤不能把內部例外訊息直接回給瀏覽器（弱掃會抓這幾項） ----
+    def test_response_headers_and_error_body_are_hardened(self):
+        from http.server import ThreadingHTTPServer
+        srv = ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)
+        port = srv.server_address[1]
+        t = threading.Thread(target=srv.serve_forever, daemon=True)
+        t.start()
+        try:
+            with urllib.request.urlopen(f"http://127.0.0.1:{port}/api/version", timeout=5) as resp:
+                headers = resp.headers
+                self.assertNotIn("Python", headers.get("Server", ""))
+                self.assertEqual(headers.get("X-Content-Type-Options"), "nosniff")
+                self.assertEqual(headers.get("X-Frame-Options"), "DENY")
+            # 故意送壞掉的 JSON body，讓 self._body() 在 do_POST 的 try 區塊裡炸出
+            # json.JSONDecodeError，確認 500 回應是通用訊息，不是把 Python 例外
+            # 原始訊息（例如 "JSONDecodeError: Expecting value: line 1 column 1"）吐回去。
+            req = urllib.request.Request(
+                "http://127.0.0.1:{}/api/tasks".format(port),
+                data=b"{not valid json",
+                headers={"Content-Type": "application/json"}, method="POST")
+            try:
+                urllib.request.urlopen(req, timeout=5)
+            except urllib.error.HTTPError as e:
+                body = json.loads(e.read().decode("utf-8"))
+                self.assertNotIn("Error", body.get("error", ""))  # 不含 "XxxError" 這種例外類別名
+                self.assertNotIn("Traceback", body.get("error", ""))
+        finally:
+            srv.shutdown()
+            srv.server_close()
+
+    # ---- 登入 session cookie 要有 SameSite，降低 CSRF 風險 ----
+    def test_login_cookie_has_samesite(self):
+        from http.server import ThreadingHTTPServer
+        srv = ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)
+        port = srv.server_address[1]
+        t = threading.Thread(target=srv.serve_forever, daemon=True)
+        t.start()
+        try:
+            cfg = db.load_config()
+            cfg["bind_host"] = "0.0.0.0"
+            db.save_config(cfg)
+            db.run("INSERT INTO person(name, role) VALUES (?,?)", ("測試SameSite者", "user"))
+            body = json.dumps({"name": "測試SameSite者", "password": "samesite12345"}).encode("utf-8")
+            req = urllib.request.Request(
+                f"http://127.0.0.1:{port}/api/auth/login", data=body,
+                headers={"Content-Type": "application/json"}, method="POST")
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                self.assertIn("SameSite=Lax", resp.headers.get("Set-Cookie", ""))
+        finally:
+            cfg["bind_host"] = "127.0.0.1"
+            db.save_config(cfg)
+            srv.shutdown()
+            srv.server_close()
+
+    # ---- 前端只送 {id, co_owners}（勾選協同負責人時的實際送法）不能整支 API 炸掉：
+    # PROJ_FIELDS 過濾後 fields 會是空字典，UPDATE project SET  WHERE id=? 這種空
+    # SET子句是無效 SQL，會丟例外、co_owners 也就永遠寫不進去——即使前端顯示「已儲存」。
+    def test_project_co_owners_only_body_persists_via_real_api(self):
+        from http.server import ThreadingHTTPServer
+        srv = ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)
+        port = srv.server_address[1]
+        t = threading.Thread(target=srv.serve_forever, daemon=True)
+        t.start()
+        try:
+            pid = self.p01["id"]
+            body = json.dumps({"id": pid, "co_owners": ["測試協同甲", "測試協同乙"]}).encode("utf-8")
+            req = urllib.request.Request(
+                f"http://127.0.0.1:{port}/api/projects", data=body,
+                headers={"Content-Type": "application/json"}, method="POST")
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                self.assertEqual(resp.status, 200)
+            co = db.rows(
+                "SELECT person_name FROM project_owner WHERE project_id=? ORDER BY person_name", (pid,))
+            self.assertEqual([r["person_name"] for r in co], ["測試協同乙", "測試協同甲"])
+        finally:
+            srv.shutdown()
+            srv.server_close()
 
     # ---- 人員名單：負責人是下拉選單，來源是共用名單，不是自由打字 ----
     # ---- 階段日期是任務日期彙總出來的，任務改了要自動跟著重算，不能停在舊數字 ----
@@ -173,6 +259,33 @@ class SmokeTest(unittest.TestCase):
         item2 = next(i for i in docs_scan.stage_docs(self.p01["id"], "S01")["items"]
                     if i["doc_code"] == "REQ-SPEC")
         self.assertEqual(item2["owner"], "測試甲君")
+
+    # ---- 改名（不是刪除）：現有指派這個人的地方要一起改過去，不能變孤兒字串 ----
+    # 跟上面「刪除不動歷史資料」刻意不同調——改名是同一個人換寫法，語意不一樣。
+    def test_rename_person_cascades_to_all_owner_fields(self):
+        pid = self.p01["id"]
+        person_id = db.run("INSERT INTO person(name) VALUES (?)", ("測試改名前",))
+        db.run("UPDATE task SET owner=? WHERE project_id=? AND wbs_no='A1'", ("測試改名前", pid))
+        db.run("UPDATE project SET owner=? WHERE id=?", ("測試改名前", pid))
+        req = db.one("SELECT id FROM doc_req WHERE project_id=? AND doc_code='REQ-SPEC'", (pid,))
+        db.run("UPDATE doc_req SET owner=? WHERE id=?", ("測試改名前", req["id"]))
+        db.run("INSERT INTO project_owner(project_id, person_name) VALUES (?,?)",
+              (pid, "測試改名前"))
+
+        server._rename_person_cascade(person_id, "測試改名前", "測試改名後")
+
+        self.assertEqual(db.one("SELECT name FROM person WHERE id=?", (person_id,))["name"],
+                         "測試改名後")
+        self.assertEqual(db.one("SELECT owner FROM task WHERE project_id=? AND wbs_no='A1'",
+                                (pid,))["owner"], "測試改名後")
+        self.assertEqual(db.one("SELECT owner FROM project WHERE id=?", (pid,))["owner"],
+                         "測試改名後")
+        self.assertEqual(db.one("SELECT owner FROM doc_req WHERE id=?", (req["id"],))["owner"],
+                         "測試改名後")
+        co = [r["person_name"] for r in db.rows(
+            "SELECT person_name FROM project_owner WHERE project_id=?", (pid,))]
+        self.assertIn("測試改名後", co)
+        self.assertNotIn("測試改名前", co)
 
     # ---- 拖拉調整階段順序：代號要跟著改，不然「S03 排在 S02 前面」會被誤讀成順序 ----
     def test_stage_reorder_renames_codes_and_cascades_references(self):
@@ -505,6 +618,16 @@ class SmokeTest(unittest.TestCase):
         self.assertTrue(server.Handler._can_edit_others(None, {"role": "admin"}))
         self.assertFalse(server.Handler._can_edit_others(None, None))
 
+    # ---- 專案的主要／協同負責人不用先升級成 manager 就能改這個專案裡任何人的項目 ----
+    def test_can_edit_project_covers_owner_and_co_owner(self):
+        pid = self.p01["id"]
+        owner_name = self.p01["owner"]
+        db.run("INSERT INTO project_owner(project_id, person_name) VALUES (?,?)", (pid, "測試副手"))
+        self.assertTrue(server.Handler._can_edit_project(None, {"name": owner_name}, pid))
+        self.assertTrue(server.Handler._can_edit_project(None, {"name": "測試副手"}, pid))
+        self.assertFalse(server.Handler._can_edit_project(None, {"name": "毫不相干的人"}, pid))
+        self.assertFalse(server.Handler._can_edit_project(None, None, pid))
+
     # ---- 舊資料庫升級：is_admin=1 的既有資料要搬進 role='admin'，不能權限倒退 ----
     def test_migration_backfills_role_from_legacy_is_admin(self):
         legacy_path = os.path.join(self.tmp, "legacy.db")
@@ -524,13 +647,31 @@ class SmokeTest(unittest.TestCase):
         cfg["db_path"] = legacy_path
         db.save_config(cfg)
         try:
-            db.init_db()  # 觸發 _migrate：對這個「已存在但缺 role 欄」的 db 補欄位+搬資料
+            db.init_db()  # 觸發 _migrate：對這個「已存在但缺 role/username 欄」的 db 補欄位+搬資料
             rows = {r["name"]: r["role"] for r in db.rows("SELECT name, role FROM person")}
             self.assertEqual(rows["舊管理者"], "admin")
             self.assertEqual(rows["舊一般人"], "user")
+            # username 欄位跟唯一性 INDEX 也要補上，且不能因為這步而炸掉——這是這次
+            # migration 裡唯一一個「欄位層級 UNIQUE 沒辦法用 ALTER TABLE 直接補」的
+            # 特殊案例，用 CREATE UNIQUE INDEX 代替，這裡驗證兩邊都補了：
+            # (1) 欄位存在、預設 NULL；(2) 唯一性真的有強制。
+            with db.conn() as c:
+                col_names = {r[1] for r in c.execute("PRAGMA table_info(person)").fetchall()}
+                self.assertIn("username", col_names)
+                c.execute("UPDATE person SET username=? WHERE name=?", ("legacyadmin", "舊管理者"))
+                with self.assertRaises(sqlite3.IntegrityError):
+                    c.execute("UPDATE person SET username=? WHERE name=?", ("legacyadmin", "舊一般人"))
         finally:
             cfg["db_path"] = os.path.join(self.tmp, "wbs.db")
             db.save_config(cfg)
+
+    # ---- 多人模式：登入用中文姓名或英文帳號都要能找到同一個人 ----
+    def test_login_lookup_matches_username_or_name(self):
+        pid = db.run("INSERT INTO person(name, username) VALUES (?,?)", ("測試雙帳號者", "aliya_test"))
+        by_username = db.one("SELECT * FROM person WHERE username=? OR name=?", ("aliya_test", "aliya_test"))
+        by_name = db.one("SELECT * FROM person WHERE username=? OR name=?", ("測試雙帳號者", "測試雙帳號者"))
+        self.assertEqual(by_username["id"], pid)
+        self.assertEqual(by_name["id"], pid)
 
     # ---- 多人模式：登入失敗次數限制，鎖定後就算密碼對了也擋下 ----
     def test_login_rate_limit_locks_out_after_max_failures(self):

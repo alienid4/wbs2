@@ -289,7 +289,7 @@ tr.milestone td:nth-child(2){font-weight:700}
 .heat i.l4{background:#1e3a8a}
 
 /* -------- 專案分頁：子分頁 -------- */
-.projhd{display:flex;align-items:baseline;gap:10px;margin-bottom:6px}
+.projhd{display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap}
 .subtabs{display:flex;gap:0;margin-bottom:16px;border-bottom:1px solid var(--line)}
 .subtabs button{background:none;border:0;border-bottom:2px solid transparent;
   padding:9px 4px;margin-right:18px;color:var(--sub);cursor:pointer;font-size:14px;font-weight:600}
@@ -391,7 +391,9 @@ nav .proj-dot{width:7px;height:7px;border-radius:50%;display:inline-block;margin
 .dtasks .dtdate:hover,.dtasks .dtdate:focus{border-color:var(--line);background:var(--panel)}
 .ddocs .dhd{font-size:11px;font-weight:700;color:var(--sub);margin-bottom:8px;
   text-transform:uppercase;letter-spacing:.03em}
-.ddocs .docit{display:flex;align-items:flex-start;gap:7px;font-size:12.5px;padding:4px 0;color:var(--ink)}
+.ddocs .docit{display:flex;align-items:center;gap:7px;font-size:12.5px;padding:4px 0;color:var(--ink);flex-wrap:wrap}
+.ddocs .docit .heroDocName{min-width:60px}
+.ddocs .docit .dl{font-size:13px}
 .ddocs .docit .box{width:14px;height:14px;border-radius:3px;border:1.5px solid var(--line);
   flex-shrink:0;margin-top:1.5px}
 .ddocs .docit.ready .box{background:var(--green);border-color:var(--green);position:relative}
@@ -401,6 +403,10 @@ nav .proj-dot{width:7px;height:7px;border-radius:50%;display:inline-block;margin
 .ddocs .docit .tag{font-size:9.5px;color:var(--sub);margin-left:auto;flex-shrink:0}
 .ddocs .docit a{color:var(--accent2);text-decoration:none}
 .ddocs .docit a:hover{text-decoration:underline}
+.ddocs .docit .filecount{font-size:9.5px;color:var(--accent2);background:rgba(37,99,235,.1);
+  border-radius:99px;padding:1px 7px;flex-shrink:0}
+.ddocs .docit .heroUpload{font-size:11px;padding:1px 6px;line-height:1.4;flex-shrink:0}
+.projhd .ownerLine{margin-top:2px}
 .sp-pct.full{color:var(--green)}
 .statusline{font-size:14.5px;margin:16px 0 10px;line-height:1.7}
 .hl-red{color:var(--red)}

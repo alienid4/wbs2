@@ -99,6 +99,17 @@ CREATE TABLE IF NOT EXISTS person (
                                                 -- manager 的權限 + 重設密碼、清空資料等
                                                 -- 系統管理動作）。多機同步/Server 模式才
                                                 -- 需要登入，單機版預設不強制
+    , username      TEXT                        -- 登入帳號，跟「負責人」顯示用的中文姓名
+                                                -- （name 欄）分開——「負責人」欄位、WBS/
+                                                -- 文件的擁有者比對永遠看 name，不會因為
+                                                -- 使用者習慣用英文帳號登入而受影響。NULL
+                                                -- 代表這個人沒有另外設帳號，登入時繼續用
+                                                -- name 本身（向下相容，不強迫每個人都要
+                                                -- 設英文帳號）。唯一性用下面的 INDEX 強制
+                                                -- （不能直接寫 UNIQUE 欄位限制——SQLite 的
+                                                -- ALTER TABLE ADD COLUMN 不支援替既有資料庫
+                                                -- 補一個帶 UNIQUE 的欄位，只能新建資料庫時
+                                                -- 用；分開寫 INDEX 兩種情況都適用）
 );
 
 CREATE TABLE IF NOT EXISTS session (
@@ -196,6 +207,11 @@ DEFAULT_CONFIG = {
     "smtp_pass": "",                # 明碼存在本機 config.json，Gmail 等服務請用「應用程式密碼」，不要用登入密碼
     "sync_token": "",               # 單機/Server 同步用的機器對機器共用密鑰，不是任何人的登入密碼；
                                      # 兩邊 config.json 要填一樣的值，Server 模式下同步端點才會認
+    "tls_enabled": False,           # 開了才會多開一個 HTTPS 埠（tls_port），不影響原本的 HTTP 埠——
+                                     # 測試期間兩個並存，確認沒問題後再把 HTTP 那個關掉
+    "tls_port": 3443,               # HTTPS 監聽埠，跟 port（HTTP）分開，不互相影響
+    "tls_cert_file": "",            # 憑證檔路徑（.pem/.crt），測試期間用自簽憑證即可
+    "tls_key_file": "",             # 私鑰檔路徑（.pem/.key）
 }
 
 
@@ -254,6 +270,7 @@ MIGRATIONS = [
     ("person", "password_salt", "TEXT"),
     ("person", "is_admin", "INTEGER DEFAULT 0"),
     ("person", "role", "TEXT DEFAULT 'user'"),
+    ("person", "username", "TEXT"),
 ]
 
 
@@ -270,6 +287,12 @@ def _migrate(c):
         # 原本的管理者一夜之間變回一般使用者，權限判斷全部改看 role 之後這步
         # 不做的話會是真的權限倒退，不是無害的欄位新增。
         c.execute("UPDATE person SET role='admin' WHERE is_admin=1")
+    # username 的唯一性用 INDEX 強制，不是欄位層級的 UNIQUE——SQLite 的
+    # ALTER TABLE ADD COLUMN 不支援直接補一個帶 UNIQUE 的欄位，只能另外建
+    # INDEX；放在這裡（migrate 尾端、ALTER TABLE 都跑完之後）而不是 SCHEMA
+    # 字串裡，是因為 SCHEMA 對「已存在的舊資料庫」不會重新跑 CREATE TABLE，
+    # 這時候欄位還沒補上，這裡先建 INDEX 會直接噴「no such column」。
+    c.execute("CREATE UNIQUE INDEX IF NOT EXISTS ux_person_username ON person(username)")
 
 
 def init_db():
