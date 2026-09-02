@@ -5,6 +5,28 @@
 
 ---
 
+## 已安裝的 Server 主機要更新 → 看 `patches/`
+
+`patches/YYYYMMDD/patch_YYYYMMDD_HHMM.tar.gz` 是給**已經用 `tools/install_server.sh`
+裝好的 Server 主機**用的更新包。**永遠套最新那一包就好**——進日期最大的資料夾、
+取檔名時間最大的那一包。每包都是**累積包**（從上一個已知已套用的版本一路到打包當下），
+中間漏套幾包也沒關係，抓最新的一次套上就到位。
+
+```bash
+cd /tmp && tar xzf patch_YYYYMMDD_HHMM.tar.gz && cd patch_YYYYMMDD_HHMM
+sudo bash patch.sh
+```
+
+同目錄的 `.sha256` 可用 `sha256sum -c` 核對。包裡的 `MANIFEST.txt` 寫著這包是哪個版本、
+涵蓋哪些改動。`patch.sh` 冪等，重複套用不會壞，中途失敗也可以直接重跑。
+
+還沒裝過的新機器，第一次安裝走 `tools/install_server.sh`，不是這裡的 patches/。
+
+（Windows 筆電那套是另一套機制——看下面「之後每次要更新」用 `tools/relay/update.bat`
+整包 zip 鏡像，兩套不要混用。）
+
+---
+
 ## 一、啟動
 
 ```
