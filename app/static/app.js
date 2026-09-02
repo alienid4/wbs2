@@ -32,6 +32,29 @@ const post = (url, body) => api(url, {
   body: JSON.stringify(body ?? {})
 });
 
+// 一次選多個檔案上傳到同一個應繳項目（例如多家廠商各交一份規格書）。
+// 一支一支照順序上傳，不要平行送出——後端的版次號是「讀現有最大版次 +1」，
+// 平行送會兩個檔案同時讀到一樣的版次、搶著存成同一個檔名，其中一個會被
+// 「檔案已存在」擋下，改成序列送就不會撞版次。回傳成功/失敗的檔名清單，
+// 呼叫端自己組 toast 訊息。
+async function uploadFilesToDocreq(docId, fileList) {
+  const files = [...fileList];
+  const ok = [], fail = [];
+  for (const file of files) {
+    const fd = new FormData();
+    fd.append("file", file);
+    try {
+      const r = await fetch(`/api/docreq/${docId}/upload`, { method: "POST", body: fd });
+      const j = await r.json();
+      if (!r.ok || j.error) fail.push(`${file.name}：${j.error || r.status}`);
+      else ok.push(j.filename);
+    } catch (e) {
+      fail.push(`${file.name}：${e.message || e}`);
+    }
+  }
+  return { ok, fail };
+}
+
 let toastT;
 function toast(msg) {
   const el = $("#toast"); el.textContent = msg; el.classList.add("on");
@@ -462,7 +485,7 @@ function stageDetailHTML(stage, docStage, tasks, pid) {
           <span class="box"></span>
           <span contenteditable class="heroDocName" data-id="${x.id}">${esc(x.name)}</span>${dlHTML}${countBadge}
           <button class="ghost heroUpload" data-id="${x.id}" title="上傳一份檔案（同一項目可以上傳多份，各自留存不會互相覆蓋）">📤</button>
-          <input type="file" class="heroUploadInput" data-id="${x.id}" style="display:none">
+          <input type="file" class="heroUploadInput" data-id="${x.id}" multiple style="display:none">
           <label class="sub" style="white-space:nowrap"><input type="checkbox" class="heroReqToggle"
             data-id="${x.id}" ${x.required ? "checked" : ""}> 必繳</label>
         </div>`;
@@ -502,30 +525,51 @@ function renderProjectHero(section, st, d) {
       ["red", s.docs_missing, "文件缺件", "docs_missing"],
     ].map(([c, v, l, metric]) =>
       `<div class="kpi clickable ${v ? c : ""}" data-metric="${metric}" title="點選檢視項目明細">
-        <b>${esc(v)}</b><span>${l}</span></div>`).join("")}</div>`;
+        <b>${esc(v)}</b><span>${l}</span></div>`).join("")}</div>
+    <div class="paper memoBox">
+      <div class="memoHd"><h3 style="margin:0">📝 備忘</h3>
+        <span class="sub">自由記錄，不進排程/文件關卡——主機清單、待申請的防火牆規則之類雜項筆記</span></div>
+      <textarea class="memoText" placeholder="例如：申請了 5 台主機 10.1.1.1~10.1.1.5；防火牆要開 443/22…">${esc(st.project.memo || "")}</textarea>
+      <p class="sub memoSaved"></p>
+    </div>`;
 
   const gotoBtn = box.querySelector(".gotoReport");
   if (gotoBtn) gotoBtn.onclick = () => $('#tabs button[data-tab="report"]').click();
+
+  // 備忘欄失焦就存，跟其他欄位一樣的節奏——不用另外按「儲存」。但這欄故意不
+  // 觸發整頁重繪（其他欄位改完要 rerender 才能反映排程變化；備忘純文字不影響
+  // 任何計算，重繪只會打斷正在打字的人，體驗上反而更糟）。
+  const memoInp = box.querySelector(".memoText");
+  const memoMsg = box.querySelector(".memoSaved");
+  if (memoInp) {
+    let memoOrig = memoInp.value;
+    memoInp.onblur = async () => {
+      if (memoInp.value === memoOrig) return;
+      try {
+        await post("/api/projects", { id: pid, memo: memoInp.value });
+        memoOrig = memoInp.value;
+        if (memoMsg) {
+          memoMsg.textContent = "已儲存";
+          setTimeout(() => { if (memoMsg.textContent === "已儲存") memoMsg.textContent = ""; }, 2000);
+        }
+      } catch (e) {
+        toast(e.message || "備忘儲存失敗");
+      }
+    };
+  }
 
   // 精簡視圖直接能上傳，不用先跳去「文件與階段」子分頁——跟那邊同一支 API，
   // 上傳成功後整頁重新渲染，兩個視圖看到的都是最新狀態。
   $$(".heroUpload", box).forEach(btn => btn.onclick = () =>
     box.querySelector(`.heroUploadInput[data-id="${btn.dataset.id}"]`).click());
   $$(".heroUploadInput", box).forEach(inp => inp.onchange = async () => {
-    const file = inp.files[0];
-    if (!file) return;
-    toast("上傳中…");
-    const fd = new FormData();
-    fd.append("file", file);
-    try {
-      const r = await fetch(`/api/docreq/${inp.dataset.id}/upload`, { method: "POST", body: fd });
-      const j = await r.json();
-      if (!r.ok || j.error) { toast(j.error || "上傳失敗"); return; }
-      toast(`已上傳「${j.filename}」，比對成功`);
-      renderProjectPage(pid);
-    } catch (e) {
-      toast("上傳失敗：" + (e.message || e));
-    }
+    if (!inp.files.length) return;
+    toast(inp.files.length > 1 ? `上傳中…（共 ${inp.files.length} 個檔案）` : "上傳中…");
+    const { ok, fail } = await uploadFilesToDocreq(inp.dataset.id, inp.files);
+    inp.value = "";
+    if (ok.length) toast(`已上傳：${ok.join("、")}` + (fail.length ? `（${fail.length} 個失敗）` : ""));
+    if (fail.length) toast("上傳失敗：" + fail.join("；"));
+    if (ok.length) renderProjectPage(pid);
   });
   $$(".heroReqToggle", box).forEach(cb => {
     cb.onclick = e => e.stopPropagation();
@@ -1828,7 +1872,7 @@ function renderDocsPanel(pid, section, d) {
             </div>
             <div class="docact">
               <button class="ghost upload" data-id="${x.id}">📤 上傳</button>
-              <input type="file" class="uploadInput" data-id="${x.id}" style="display:none">
+              <input type="file" class="uploadInput" data-id="${x.id}" multiple style="display:none">
               <label class="sub docprog" style="white-space:nowrap">
                 <input type="checkbox" class="reqToggle" data-id="${x.id}" ${x.required ? "checked" : ""}> 必繳
               </label>
@@ -1911,22 +1955,13 @@ function renderDocsPanel(pid, section, d) {
     body.querySelector(`.uploadInput[data-id="${btn.dataset.id}"]`).click();
   });
   $$(".uploadInput", body).forEach(inp => inp.onchange = async () => {
-    const file = inp.files[0];
-    if (!file) return;
-    toast("上傳中…");
-    const fd = new FormData();
-    fd.append("file", file);
-    try {
-      const r = await fetch(`/api/docreq/${inp.dataset.id}/upload`, { method: "POST", body: fd });
-      const j = await r.json();
-      if (!r.ok || j.error) { toast(j.error || "上傳失敗"); return; }
-      toast(`已上傳「${j.filename}」，比對成功`);
-      rerenderAll();
-    } catch (e) {
-      toast("上傳失敗：" + (e.message || e));
-    } finally {
-      inp.value = "";
-    }
+    if (!inp.files.length) return;
+    toast(inp.files.length > 1 ? `上傳中…（共 ${inp.files.length} 個檔案）` : "上傳中…");
+    const { ok, fail } = await uploadFilesToDocreq(inp.dataset.id, inp.files);
+    inp.value = "";
+    if (ok.length) toast(`已上傳：${ok.join("、")}` + (fail.length ? `（${fail.length} 個失敗）` : ""));
+    if (fail.length) toast("上傳失敗：" + fail.join("；"));
+    if (ok.length) rerenderAll();
   });
   $$(".manual", body).forEach(sel => {
     sel.onclick = e => e.stopPropagation();
@@ -2218,9 +2253,12 @@ $("#clearDataBtn").onclick = async () => {
   }
 };
 $("#restoreDataBtn").onclick = async () => {
-  if (!confirm("確定還原最近一次備份？\n目前資料將被備份檔覆蓋。")) return;
+  const sel = $("#restoreBackupSelect");
+  const filename = sel ? sel.value : "";
+  const label = filename ? `指定的備份（${sel.options[sel.selectedIndex].textContent}）` : "最近一次備份";
+  if (!confirm(`確定還原${label}？\n目前資料將被備份檔覆蓋。`)) return;
   try {
-    const r = await post("/api/admin/restore-backup", {});
+    const r = await post("/api/admin/restore-backup", filename ? { filename } : {});
     $("#dataOpsMsg").textContent = `已還原：${r.restored}`;
     toast("已還原，畫面即將重新整理");
     setTimeout(() => location.reload(), 1200);
@@ -2228,6 +2266,59 @@ $("#restoreDataBtn").onclick = async () => {
     toast(e.message || "還原失敗");
   }
 };
+
+// 下載選定的備份到自己電腦——單純開新分頁讓瀏覽器走原生下載流程，不用另外
+// 寫檔案儲存邏輯。沒選就代表要下載「最新一份」，直接抓下拉選單第二個選項
+// （第一個是「最新一份」這個佔位選項本身，沒有對應的實際檔名可以下載）。
+$("#downloadBackupBtn").onclick = () => {
+  const sel = $("#restoreBackupSelect");
+  const filename = sel && sel.value ? sel.value : (sel && sel.options.length > 1 ? sel.options[1].value : "");
+  if (!filename) return toast("目前沒有任何備份檔可以下載");
+  window.open(`/api/admin/backups/${encodeURIComponent(filename)}/download`, "_blank");
+};
+
+$("#uploadRestoreBtn").onclick = () => $("#uploadRestoreInput").click();
+$("#uploadRestoreInput").onchange = async () => {
+  const inp = $("#uploadRestoreInput");
+  const file = inp.files[0];
+  if (!file) return;
+  if (!confirm(`確定用「${file.name}」覆蓋目前的資料？\n目前資料會先自動備份一份，出事還原得回來。`)) {
+    inp.value = "";
+    return;
+  }
+  toast("上傳中…");
+  const fd = new FormData();
+  fd.append("file", file);
+  try {
+    const r = await fetch("/api/admin/backups/upload-restore", { method: "POST", body: fd });
+    const j = await r.json();
+    if (!r.ok || j.error) { toast(j.error || "上傳並還原失敗"); return; }
+    $("#dataOpsMsg").textContent = `已用上傳的「${j.filename}」覆蓋現有資料。`;
+    toast("已還原，畫面即將重新整理");
+    setTimeout(() => location.reload(), 1200);
+  } catch (e) {
+    toast("上傳失敗：" + (e.message || e));
+  } finally {
+    inp.value = "";
+  }
+};
+
+// 還原下拉選單的內容——只有管理者看得到「清空/還原」這塊（見 adminOnly），
+// 一般使用者/manager 不用打這支 API，省一次沒必要的請求。
+async function loadBackupList() {
+  const sel = $("#restoreBackupSelect");
+  if (!sel) return;
+  if (currentPerson && currentPerson.role !== "admin") return;
+  try {
+    const list = await api("/api/admin/backups");
+    sel.innerHTML = '<option value="">（最新一份）</option>' + list.map(b =>
+      `<option value="${esc(b.filename)}">${esc(b.label)}　${esc(b.kind)}　${(b.size / 1024).toFixed(0)}KB</option>`
+    ).join("");
+  } catch {
+    // 列不出來就維持只有「最新一份」這個選項，還原最新那顆按鈕依然可用，
+    // 不因為這支輔助用的列表 API 失敗就把整個還原功能鎖死。
+  }
+}
 
 // 單純存一份備份，不清空、不重整畫面——隨時想存就存，跟「清空」那個高風險動作分開，
 // 不用打確認字。
@@ -2255,6 +2346,7 @@ async function loadSettings() {
   await ensureProjects();
   await ensurePeople();
   renderPeopleBody();
+  loadBackupList();
   $("#projForm").innerHTML = projects.map(p => `
     <div class="projcard">
       <div class="projcard-hd">${esc(p.code)}

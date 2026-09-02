@@ -68,6 +68,10 @@ input,select,textarea{font:inherit;font-size:13px;padding:6px 9px;border:1px sol
   padding:18px 20px;box-shadow:var(--shadow);margin-bottom:16px}
 .paper.dangerZone{border-color:var(--red);background:var(--redbg)}
 .paper.dangerZone h2{color:var(--red)}
+.memoBox .memoHd{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;margin-bottom:8px}
+.memoText{width:100%;min-height:90px;resize:vertical;font:inherit;padding:10px 12px;
+  border:1px solid var(--line);border-radius:8px;background:var(--panel);color:var(--ink)}
+.memoSaved{min-height:14px;color:var(--green)}
 button.ghost.danger{border-color:var(--red);color:var(--red)}
 button.ghost.danger:hover{background:var(--red);color:#fff}
 

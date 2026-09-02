@@ -271,6 +271,9 @@ MIGRATIONS = [
     ("person", "is_admin", "INTEGER DEFAULT 0"),
     ("person", "role", "TEXT DEFAULT 'user'"),
     ("person", "username", "TEXT"),
+    # 自由格式備忘欄（主機 IP、待申請防火牆規則之類雜項筆記）——跟 WBS/文件無關，
+    # 不進排程或關卡判斷，純粹隨手記，欄位獨立不影響任何既有邏輯。
+    ("project", "memo", "TEXT"),
 ]
 
 

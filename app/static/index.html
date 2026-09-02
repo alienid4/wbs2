@@ -183,7 +183,14 @@
           完成後點選「還原」即可取回原資料繼續作業。</p>
         <div class="toolbar">
           <button class="ghost danger" id="clearDataBtn">清空資料（自動備份）</button>
-          <button class="ghost" id="restoreDataBtn">還原最近一次備份</button>
+          <select id="restoreBackupSelect" title="不選就還原最新一份"><option value="">（最新一份）</option></select>
+          <button class="ghost" id="restoreDataBtn">還原選定的備份</button>
+          <button class="ghost" id="downloadBackupBtn" title="把選定的備份檔下載到你的電腦">⬇ 下載選定的備份</button>
+        </div>
+        <div class="toolbar" style="margin-top:8px">
+          <button class="ghost" id="uploadRestoreBtn">⬆ 上傳 .db 檔並還原</button>
+          <input type="file" id="uploadRestoreInput" accept=".db" style="display:none">
+          <span class="sub">從別台機器（或自己另外存的備份）挑一份 .db 檔上傳，直接覆蓋目前資料——會先自動備份現況。</span>
         </div>
         <label class="sub" style="display:flex;align-items:center;gap:6px;margin-top:4px">
           <input type="checkbox" id="alsoTextBackup">

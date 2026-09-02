@@ -42,7 +42,7 @@ TASK_FIELDS = ("wbs_no", "parent_wbs", "level", "stage_code", "name", "owner",
                "planned_start", "planned_end", "actual_start", "actual_finish",
                "hard_deadline", "predecessors", "status", "progress", "note", "risk")
 PROJ_FIELDS = ("code", "name", "owner", "start_date", "end_date",
-               "docs_subdir", "color", "archived")
+               "docs_subdir", "color", "archived", "memo")
 # baseline_start/baseline_end 刻意不開放 /api/tasks 寫入——只能透過 core.freeze_baseline()
 # 改，這是「凍結後唯讀」的唯一防線；project.baseline_end 同理不在 PROJ_FIELDS 裡。
 
@@ -457,7 +457,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def _api_upload(self, path, ctype):
         m = re.match(r"^/api/docreq/(\d+)/upload$", path)
-        if not m:
+        is_restore = path == "/api/admin/backups/upload-restore"
+        if not m and not is_restore:
             return self._err("not found", 404)
         n = int(self.headers.get("Content-Length") or 0)
         if n > MAX_UPLOAD_BYTES:
@@ -472,6 +473,24 @@ class Handler(BaseHTTPRequestHandler):
         f = fields.get("file")
         if not f or not f.get("filename"):
             return self._err("沒有收到檔案", 400)
+        if is_restore:
+            if self._require_admin():
+                return None
+            # 使用者自己電腦上挑一份 .db 檔上傳並直接還原——跟 sync_server.py 那條
+            # 機器對機器的 db-snapshot 端點共用同一套「驗檔頭→先備份現況→原子換檔
+            # →補 migration」邏輯，只是這裡走瀏覽器 multipart 上傳、admin 登入驗證，
+            # 不是 sync_token。
+            data = f["data"]
+            if not data.startswith(b"SQLite format 3\x00"):
+                return self._err("上傳的內容不是有效的 SQLite 資料庫檔，已拒絕覆蓋", 400)
+            _backup_db(prefix="preupload")
+            dst = db.db_path()
+            tmp = dst + ".incoming"
+            with open(tmp, "wb") as fh:
+                fh.write(data)
+            os.replace(tmp, dst)
+            db.init_db()
+            return self._json({"ok": True, "filename": f["filename"]})
         r = docs_scan.upload_doc(int(m.group(1)), f["filename"], f["data"])
         return self._json(r, 400 if r.get("error") else 200)
 
@@ -593,6 +612,36 @@ class Handler(BaseHTTPRequestHandler):
                 "SELECT id, name, role, username, "
                 "(password_hash IS NOT NULL) AS has_password "
                 "FROM person ORDER BY name"))
+        if p == "/api/admin/backups":
+            if self._require_admin():
+                return None
+            bdir = os.path.join(os.path.dirname(db.db_path()), "backups")
+            files = _sorted_backup_files(bdir)
+            out = []
+            for f in files:
+                stamp = _backup_stamp(f)
+                label = f"{stamp[:4]}-{stamp[4:6]}-{stamp[6:8]} {stamp[9:11]}:{stamp[11:13]}:{stamp[13:15]}" if stamp else f
+                kind = "清空前手動備份" if f.startswith("preclear_") else "開機自動備份"
+                try:
+                    size = os.path.getsize(os.path.join(bdir, f))
+                except OSError:
+                    size = 0
+                out.append({"filename": f, "label": label, "kind": kind, "size": size})
+            return self._json(out)
+        m = re.match(r"^/api/admin/backups/([^/]+)/download$", p)
+        if m:
+            if self._require_admin():
+                return None
+            bdir = os.path.join(os.path.dirname(db.db_path()), "backups")
+            # 檔名只能是白名單裡列出的（_sorted_backup_files 只回傳 bdir 底下真的
+            # 存在的 .db 檔），不能拿網址裡的字串直接接路徑——擋路徑穿越。
+            fname = m.group(1)
+            if fname not in _sorted_backup_files(bdir):
+                return self._err("找不到這份備份檔", 404)
+            full = os.path.join(bdir, fname)
+            with open(full, "rb") as f:
+                return self._send(200, f.read(), "application/octet-stream",
+                                  _dl_headers(fname, fname))
         if p == "/api/auth/me":
             person = self._current_person()
             return self._json({
@@ -1056,15 +1105,20 @@ class Handler(BaseHTTPRequestHandler):
             # 兩者常常對不上（2026-08-29 實測就選錯過）。唯一可信的是檔名裡自己寫的
             # 時間戳，用正規表達式抓出來比大小，不管前綴是什麼。
             bdir = os.path.join(os.path.dirname(db.db_path()), "backups")
-            def _stamp(f):
-                m = re.search(r"(\d{8}_\d{6})\.db$", f)
-                return m.group(1) if m else ""
-            files = sorted(
-                (f for f in os.listdir(bdir) if f.endswith(".db")) if os.path.isdir(bdir) else [],
-                key=_stamp, reverse=True)
+            files = _sorted_backup_files(bdir)
             if not files:
                 return self._err("找不到任何備份檔", 400)
-            latest = os.path.join(bdir, files[0])
+            # 可以指定還原哪一份（畫面上的下拉選單）；不指定就沿用舊行為還原最新一份。
+            # 檔名只能是 basename、必須在備份清單裡才准用——擋路徑穿越，不能拿使用者
+            # 傳來的字串直接接路徑去讀任意檔案。
+            wanted = (body.get("filename") or "").strip()
+            if wanted:
+                if wanted not in files:
+                    return self._err("指定的備份檔不存在", 400)
+                target = wanted
+            else:
+                target = files[0]
+            latest = os.path.join(bdir, target)
             import shutil
             shutil.copy2(latest, db.db_path())
             # 還原完立刻重跑一次 migration，不要等下次重啟服務才補欄位——還原的備份
@@ -1072,7 +1126,7 @@ class Handler(BaseHTTPRequestHandler):
             # 重啟前這段時間，只要程式一碰到新欄位就會直接噴 SQLite「no such
             # column」錯誤，使用者會以為是還原失敗，其實只是欄位還沒補上。
             db.init_db()
-            return self._json({"ok": True, "restored": files[0]})
+            return self._json({"ok": True, "restored": target})
 
         if p == "/api/projects":
             if self._require_manager_or_admin():
@@ -1308,6 +1362,20 @@ def _xor_obfuscate(data, password):
     import hashlib
     key = hashlib.sha256(password.encode("utf-8")).digest()
     return bytes(b ^ key[i % len(key)] for i, b in enumerate(data))
+
+
+def _backup_stamp(filename):
+    m = re.search(r"(\d{8}_\d{6})\.db$", filename)
+    return m.group(1) if m else ""
+
+
+def _sorted_backup_files(bdir):
+    """備份檔名（新到舊）。跟 restore-backup 共用同一份排序邏輯——只有一處判斷
+    「哪個新哪個舊」，不要分開各寫一次然後兩邊標準不小心兜不起來。"""
+    if not os.path.isdir(bdir):
+        return []
+    return sorted((f for f in os.listdir(bdir) if f.endswith(".db")),
+                  key=_backup_stamp, reverse=True)
 
 
 def _backup_db(prefix="wbs", also_text=False, also_encrypted=False, password=None):
